@@ -42,21 +42,83 @@ h3 {
   gap: 24px;
 }
 
-.hero h1 {
-  margin: 0 0 10px;
-  font-size: 32px;
-  line-height: 1.15;
-}
-
-.hero p,
 .legend-lead,
 .legend-note,
-.editor p {
+.editor p,
+.modal p,
+.modal li {
   margin: 0;
   color: #6b6560;
   font-size: 15px;
   line-height: 1.55;
   font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  background: rgb(28 26 23 / 45%);
+}
+
+.modal {
+  width: min(680px, 100%);
+  max-height: min(88vh, 900px);
+  border: 1px solid #d9d2c8;
+  border-radius: 12px;
+  background: #fffcf7;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 28px 28px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-body h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  line-height: 1.2;
+  color: #1c1a17;
+}
+
+.modal-body h2 {
+  margin: 12px 0 0;
+  font-size: 18px;
+  line-height: 1.3;
+  color: #1c1a17;
+}
+
+.modal-body ul,
+.modal-body ol {
+  margin: 0;
+  padding-left: 1.25em;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-actions {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 28px 20px;
+  border-top: 1px solid #eee8df;
+  background: #fffcf7;
 }
 
 .stats {
@@ -129,59 +191,134 @@ h3 {
   background: #e6e0d6;
 }
 
-.callout {
+.toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
   padding: 12px 14px;
   border-radius: 8px;
   border: 1px solid #d9d2c8;
   background: #fffcf7;
+  box-shadow: 0 10px 28px rgba(40, 32, 22, 0.14);
   font-family: "Avenir Next", "Segoe UI", sans-serif;
+  cursor: pointer;
+  animation: toast-in 0.22s ease-out;
 }
 
-.callout strong {
+.toast strong {
   display: block;
   margin-bottom: 4px;
   font-size: 13px;
 }
 
-.callout p {
+.toast p {
   margin: 0;
   font-size: 13px;
   line-height: 1.45;
   color: #6b6560;
 }
 
-.callout.danger {
+.toast.danger {
   border-color: #e3b6b6;
   background: #fbf4f4;
 }
 
-.callout.danger strong {
+.toast.danger strong {
   color: #c24545;
 }
 
-.callout.warning {
+.toast.warning {
   border-color: #e5d3a4;
   background: #fbf7ee;
 }
 
-.callout.warning strong {
+.toast.warning strong {
   color: #9a7010;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
   gap: 24px;
-  align-items: start;
+  align-items: stretch;
 }
 
-.editor-head {
+.map-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.editor-head,
+.map-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
+.day-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.day-tab {
+  height: 28px;
+  min-width: 36px;
+  padding: 0 8px;
+  border: 1px solid #d9d2c8;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b6560;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.day-tab.active {
+  background: #1c1a17;
+  color: #fffcf7;
+  border-color: #1c1a17;
+}
+
+.wheel-slot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 12px 0;
+}
+
+.editor-head {
+  position: relative;
+}
+
+.map-head h2,
 .map-panel h2,
 .editor-head h2,
 .table-panel h2 {
@@ -189,10 +326,89 @@ h3 {
   font-size: 20px;
 }
 
-.editor-head span {
+.editor-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.editor-head > span {
   color: #9a938b;
   font-size: 13px;
   font-family: "Avenir Next", "Segoe UI", sans-serif;
+  flex-shrink: 0;
+}
+
+.info-tip {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.info-btn {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid #c8c1b6;
+  border-radius: 50%;
+  background: transparent;
+  color: #9a938b;
+  font-family: "Georgia", "Iowan Old Style", serif;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+}
+
+.info-btn:hover,
+.info-btn:focus-visible {
+  color: #1c1a17;
+  border-color: #1c1a17;
+  outline: none;
+}
+
+.info-pop {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  width: auto;
+  padding: 10px 12px;
+  border: 1px solid #d9d2c8;
+  border-radius: 8px;
+  background: #fffcf7;
+  box-shadow: 0 10px 28px rgba(40, 32, 22, 0.14);
+  color: #6b6560;
+  font-size: 13px;
+  font-weight: 400;
+  font-style: normal;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.info-tip:hover .info-pop,
+.info-tip:focus-within .info-pop {
+  opacity: 1;
+  visibility: visible;
+}
+
+.pill {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #d9d2c8;
+  border-radius: 999px;
+  background: #1c1a17;
+  color: #fffcf7;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  cursor: pointer;
 }
 
 .add-row button,
@@ -206,7 +422,7 @@ h3 {
   width: 100%;
   max-width: 560px;
   aspect-ratio: 1;
-  margin: 8px auto 0;
+  margin: 0 auto;
 }
 
 .wheel svg {
@@ -214,11 +430,22 @@ h3 {
   height: 100%;
 }
 
+.wheel-step {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 2;
+  color: #9a938b;
+  font-size: 12px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  pointer-events: none;
+}
+
 .spoke {
   position: absolute;
   transform: translate(-50%, -50%);
   min-width: 78px;
-  max-width: 108px;
+  max-width: 124px;
   text-align: center;
 }
 
@@ -227,13 +454,49 @@ h3 {
   display: block;
 }
 
+.spoke-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  margin-bottom: 4px;
+}
+
 .spoke strong {
   font-size: 13px;
   line-height: 1.2;
 }
 
+.spoke-name {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.spoke:has(.spoke-input) {
+  z-index: 5;
+}
+
+.spoke-input {
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid #d9d2c8;
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+}
+
 .spoke em {
-  margin-top: 2px;
+  margin-top: 0;
   color: #9a938b;
   font-style: normal;
   font-size: 12px;
@@ -265,10 +528,18 @@ h3 {
   cursor: default;
 }
 
+.legend-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
 .legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 18px;
+  flex-direction: column;
+  gap: 6px;
   font-size: 13px;
   color: #6b6560;
   font-family: "Avenir Next", "Segoe UI", sans-serif;
@@ -294,6 +565,8 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: 100%;
+  min-height: 0;
 }
 
 .add-row {
@@ -335,6 +608,7 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  flex: 1;
 }
 
 .interest-name {
@@ -343,9 +617,32 @@ h3 {
   gap: 8px;
 }
 
-.interest-name strong {
+.interest-name strong,
+.interest-name .name-btn,
+.interest-name .name-input {
   flex: 1;
   min-width: 0;
+}
+
+.name-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: text;
+}
+
+.name-input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d9d2c8;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-weight: 600;
 }
 
 .text-btn {
@@ -369,11 +666,18 @@ h3 {
   color: #9a938b;
 }
 
+.table-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .table-wrap {
   overflow-x: auto;
   border: 1px solid #d9d2c8;
   border-radius: 10px;
   background: #fffcf7;
+  padding-bottom: 16px;
 }
 
 table {
@@ -415,6 +719,20 @@ tbody td:first-child {
 @media (max-width: 860px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+
+  .map-head {
+    flex-wrap: wrap;
+  }
+
+  .day-tabs {
+    order: 3;
+    flex: 1 0 100%;
+    justify-content: space-between;
+  }
+
+  .legend-block {
+    margin-top: 0;
   }
 
   .hero h1 {

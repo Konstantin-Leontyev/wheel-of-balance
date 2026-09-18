@@ -1,13 +1,22 @@
 export const WEEK_HOURS = 168;
+export const DAY_COUNT = 7;
+export const HOUR_MINUTES = 60;
+export const DAY_HOURS = 24;
+export const DAY_MINUTES = DAY_HOURS * HOUR_MINUTES;
+export const WEEK_MINUTES = WEEK_HOURS * HOUR_MINUTES;
 export const RING_COUNT = 10;
-export const STEPS_PER_RING = 10;
-export const MINUTES_PER_STEP = 67.2;
-export const MAX_STEPS_PER_INTEREST = RING_COUNT * STEPS_PER_RING;
-export const MAX_TOTAL_STEPS = 150;
+export const WHEEL_STEP_MINUTES = HOUR_MINUTES;
+export const LIST_STEP_DAILY_MINUTES = 10;
+export const MAX_HOURS_PER_DAY = 16;
+export const MAX_MINUTES_PER_INTEREST = MAX_HOURS_PER_DAY * HOUR_MINUTES;
+export const MAX_MINUTES_PER_WEEK_INTEREST = MAX_MINUTES_PER_INTEREST * DAY_COUNT;
+export const MINUTES_PER_LEVEL = MAX_MINUTES_PER_INTEREST / RING_COUNT;
+export const WEEK_MINUTES_PER_LEVEL = MAX_MINUTES_PER_WEEK_INTEREST / RING_COUNT;
 export const MAX_INTERESTS = 12;
-export const SLEEP_NORM_STEPS = 50;
-export const SLEEP_MIN_STEPS = 25;
-export const WORK_NORM_STEPS = 50;
+export const SLEEP_NORM_MINUTES = 8 * HOUR_MINUTES;
+export const SLEEP_MIN_MINUTES = 4 * HOUR_MINUTES;
+export const WORK_NORM_MINUTES = SLEEP_NORM_MINUTES;
+export const LEGACY_MINUTES_PER_STEP = 67.2;
 export const VIEW = 640;
 export const CX = VIEW / 2;
 export const CY = VIEW / 2;
@@ -32,42 +41,165 @@ export type Interest = {
   id: string;
   name: string;
   locked: boolean;
-  steps: number;
+  minutes: number;
 };
 
-export const DEFAULT_INTERESTS: Interest[] = [
-  { id: "sleep", name: "Сон", locked: true, steps: 50 },
-  { id: "work", name: "Работа", locked: false, steps: 30 },
-  { id: "family", name: "Семья", locked: false, steps: 20 },
-  { id: "sport", name: "Спорт", locked: false, steps: 10 },
-  { id: "fun", name: "Развлечения", locked: false, steps: 10 },
-  { id: "education", name: "Образование", locked: false, steps: 10 },
-  { id: "relations", name: "Отношения", locked: false, steps: 10 },
-  { id: "craft", name: "Творчество", locked: false, steps: 10 },
-  { id: "home", name: "Быт", locked: false, steps: 0 },
-  { id: "money", name: "Финансы", locked: false, steps: 0 },
-  { id: "spirit", name: "Духовность", locked: false, steps: 0 },
-  { id: "rest", name: "Отдых", locked: false, steps: 0 },
+export const DAYS = [
+  { id: "mon", short: "Пн", workday: true },
+  { id: "tue", short: "Вт", workday: true },
+  { id: "wed", short: "Ср", workday: true },
+  { id: "thu", short: "Чт", workday: true },
+  { id: "fri", short: "Пт", workday: true },
+  { id: "sat", short: "Сб", workday: false },
+  { id: "sun", short: "Вс", workday: false },
+] as const;
+
+export type DayId = (typeof DAYS)[number]["id"];
+export type WeekPlan = Record<DayId, Interest[]>;
+
+const SPHERE_DEFS: Array<{ id: string; name: string; locked: boolean }> = [
+  { id: "sleep", name: "Сон и восстановление", locked: true },
+  { id: "work", name: "Работа и карьера", locked: false },
+  { id: "family", name: "Семья", locked: false },
+  { id: "sport", name: "Здоровье и спорт", locked: false },
+  { id: "fun", name: "Развлечения и друзья", locked: false },
+  { id: "education", name: "Образование и саморазвитие", locked: false },
+  { id: "relations", name: "Отношения", locked: false },
+  { id: "craft", name: "Хобби и увлечения", locked: false },
+  { id: "home", name: "Быт и уклад жизни", locked: false },
+  { id: "money", name: "Финансы и благосостояние", locked: false },
+  { id: "mentality", name: "Ментальность и рефлексия", locked: false },
+  { id: "rest", name: "Отдых и путешествия", locked: false },
 ];
+
+function hours(value: number): number {
+  return value * HOUR_MINUTES;
+}
+
+export function defaultDayInterests(workday: boolean): Interest[] {
+  return SPHERE_DEFS.map((def) => ({
+    ...def,
+    minutes:
+      def.id === "sleep"
+        ? hours(8)
+        : def.id === "work"
+          ? workday
+            ? hours(8)
+            : 0
+          : 0,
+  }));
+}
+
+export function defaultWeek(): WeekPlan {
+  return {
+    mon: defaultDayInterests(true),
+    tue: defaultDayInterests(true),
+    wed: defaultDayInterests(true),
+    thu: defaultDayInterests(true),
+    fri: defaultDayInterests(true),
+    sat: defaultDayInterests(false),
+    sun: defaultDayInterests(false),
+  };
+}
+
+export function todayDayId(): DayId {
+  const order: DayId[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  return order[new Date().getDay()];
+}
 
 export function formatMinutes(mins: number): string {
   const total = Math.max(0, Math.round(mins));
   const h = Math.floor(total / 60);
   const m = total % 60;
+  if (m === 0) return `${h} ч`;
   if (h === 0) return `${m} мин`;
   return `${h} ч ${m} мин`;
 }
 
-export function weeklyMinutes(steps: number): number {
-  return steps * MINUTES_PER_STEP;
+export function dailyMinutes(weekly: number): number {
+  const raw = weekly / DAY_COUNT;
+  return Math.round(raw / LIST_STEP_DAILY_MINUTES) * LIST_STEP_DAILY_MINUTES;
 }
 
 export function floorFor(item: Interest): number {
-  return item.id === "sleep" || item.locked ? SLEEP_MIN_STEPS : 0;
+  return item.id === "sleep" || item.locked ? SLEEP_MIN_MINUTES : 0;
 }
 
-export function levelValue(steps: number): number {
-  return Math.round(steps / STEPS_PER_RING);
+export function levelValue(minutes: number): number {
+  return Math.round((minutes / MAX_MINUTES_PER_INTEREST) * RING_COUNT);
+}
+
+export function weekLevelValue(minutes: number): number {
+  return Math.round((minutes / MAX_MINUTES_PER_WEEK_INTEREST) * RING_COUNT);
+}
+
+export function nextWheelMinutes(
+  current: number,
+  dir: 1 | -1,
+  floor: number,
+  cap: number,
+  room: number,
+): number | null {
+  if (dir > 0) {
+    if (room < WHEEL_STEP_MINUTES || current >= cap) return null;
+    const next = current + WHEEL_STEP_MINUTES;
+    if (next > cap) return null;
+    return next;
+  }
+  const next = Math.max(floor, current - WHEEL_STEP_MINUTES);
+  return next === current ? null : next;
+}
+
+export function nextListMinutes(
+  current: number,
+  dir: 1 | -1,
+  floor: number,
+  cap: number,
+  room: number,
+): number | null {
+  if (dir > 0) {
+    if (room < LIST_STEP_DAILY_MINUTES || current >= cap) return null;
+    const next = Math.min(cap, current + LIST_STEP_DAILY_MINUTES);
+    if (next - current > room) return null;
+    return next;
+  }
+  const next = Math.max(floor, current - LIST_STEP_DAILY_MINUTES);
+  return next === current ? null : next;
+}
+
+export function weekUsedMinutes(week: WeekPlan): number {
+  return DAYS.reduce(
+    (sum, day) =>
+      sum + week[day.id].reduce((daySum, item) => daySum + item.minutes, 0),
+    0,
+  );
+}
+
+export function aggregateWeek(week: WeekPlan): Interest[] {
+  const map = new Map<string, Interest>();
+  for (const day of DAYS) {
+    for (const item of week[day.id]) {
+      const prev = map.get(item.id);
+      if (!prev) {
+        map.set(item.id, { ...item });
+      } else {
+        map.set(item.id, {
+          ...prev,
+          minutes: prev.minutes + item.minutes,
+          locked: prev.locked || item.locked,
+        });
+      }
+    }
+  }
+  const order = SPHERE_DEFS.map((item) => item.id);
+  return [...map.values()].sort((a, b) => {
+    const ia = order.indexOf(a.id);
+    const ib = order.indexOf(b.id);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.name.localeCompare(b.name, "ru");
+  });
 }
 
 export function polar(index: number, count: number, radius: number) {
@@ -142,11 +274,15 @@ export function colorAtLevel(level: number): string {
 }
 
 export function toneForInterest(item: Interest): string {
-  return colorAtLevel(item.steps / STEPS_PER_RING);
+  return colorAtLevel(item.minutes / MINUTES_PER_LEVEL);
+}
+
+export function weekToneForInterest(item: Interest): string {
+  return colorAtLevel(item.minutes / WEEK_MINUTES_PER_LEVEL);
 }
 
 export function usageTone(interest: Interest): "red" | "orange" | "yellow" | "green" {
-  const ring = interest.steps / STEPS_PER_RING;
+  const ring = interest.minutes / MINUTES_PER_LEVEL;
   if (ring <= 2) return "red";
   if (ring < 4.5) return "orange";
   if (ring <= 5.5) return "green";
@@ -154,7 +290,54 @@ export function usageTone(interest: Interest): "red" | "orange" | "yellow" | "gr
   return "red";
 }
 
-export function isInterestArray(value: unknown): value is Interest[] {
+const NAME_MIGRATIONS: Record<string, string> = {
+  Сон: "Сон и восстановление",
+  Работа: "Работа и карьера",
+  Творчество: "Хобби и увлечения",
+  Хобби: "Хобби и увлечения",
+  Спорт: "Здоровье и спорт",
+  Развлечения: "Развлечения и друзья",
+  "Развлечения и отдых": "Развлечения и друзья",
+  "Развлечения и путешествия": "Развлечения и друзья",
+  Отдых: "Отдых и путешествия",
+  "Отдых и друзья": "Отдых и путешествия",
+  Образование: "Образование и саморазвитие",
+  Финансы: "Финансы и благосостояние",
+  Быт: "Быт и уклад жизни",
+  Ментальность: "Ментальность и рефлексия",
+};
+
+export function migrateInterest(item: {
+  id: string;
+  name: string;
+  locked: boolean;
+  minutes?: number;
+  steps?: number;
+}): Interest {
+  let minutes =
+    typeof item.minutes === "number"
+      ? item.minutes
+      : Math.round((item.steps ?? 0) * LEGACY_MINUTES_PER_STEP);
+  if (minutes % 10 !== 0) {
+    minutes = Math.round(minutes / HOUR_MINUTES) * HOUR_MINUTES;
+  }
+  let id = item.id;
+  let name = item.name;
+  if (id === "spirit" || name === "Духовность") {
+    id = "mentality";
+    name = "Ментальность и рефлексия";
+  }
+  if (NAME_MIGRATIONS[name]) name = NAME_MIGRATIONS[name];
+  return { id, name, locked: item.locked, minutes };
+}
+
+export function isInterestArray(value: unknown): value is Array<{
+  id: string;
+  name: string;
+  locked: boolean;
+  minutes?: number;
+  steps?: number;
+}> {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
@@ -165,7 +348,14 @@ export function isInterestArray(value: unknown): value is Interest[] {
         typeof item.id === "string" &&
         typeof item.name === "string" &&
         typeof item.locked === "boolean" &&
-        typeof item.steps === "number",
+        (typeof (item as { minutes?: unknown }).minutes === "number" ||
+          typeof (item as { steps?: unknown }).steps === "number"),
     )
   );
+}
+
+export function isWeekPlan(value: unknown): value is WeekPlan {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return DAYS.every((day) => isInterestArray(record[day.id]));
 }
