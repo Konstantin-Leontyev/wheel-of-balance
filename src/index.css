@@ -1,0 +1,423 @@
+:root {
+  color: #1c1a17;
+  background: #f4f0ea;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f4f0ea;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+.hero p,
+.legend-lead,
+.legend-note,
+.editor p {
+  margin: 0;
+  color: #6b6560;
+  font-size: 15px;
+  line-height: 1.55;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 28px 40px;
+}
+
+.stat {
+  text-align: center;
+  min-width: 120px;
+}
+
+.stat strong {
+  display: block;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.stat span {
+  display: block;
+  margin-top: 4px;
+  color: #6b6560;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.stat.danger strong {
+  color: #c24545;
+}
+
+.stat.warning strong {
+  color: #b47a12;
+}
+
+.stat.success strong {
+  color: #2a9a6a;
+}
+
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #6b6560;
+  font-size: 12px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.usage-track {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(to right, #2a9a6a, #d4a017, #c24545);
+}
+
+.usage-fill {
+  min-width: 0;
+}
+
+.usage-rest {
+  min-width: 0;
+  background: #e6e0d6;
+}
+
+.callout {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #d9d2c8;
+  background: #fffcf7;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.callout strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.callout p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #6b6560;
+}
+
+.callout.danger {
+  border-color: #e3b6b6;
+  background: #fbf4f4;
+}
+
+.callout.danger strong {
+  color: #c24545;
+}
+
+.callout.warning {
+  border-color: #e5d3a4;
+  background: #fbf7ee;
+}
+
+.callout.warning strong {
+  color: #9a7010;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.map-panel h2,
+.editor-head h2,
+.table-panel h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.editor-head span {
+  color: #9a938b;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.add-row button,
+.icon-btn,
+.text-btn {
+  cursor: pointer;
+}
+
+.wheel {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 1;
+  margin: 8px auto 0;
+}
+
+.wheel svg {
+  width: 100%;
+  height: 100%;
+}
+
+.spoke {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 78px;
+  max-width: 108px;
+  text-align: center;
+}
+
+.spoke strong,
+.spoke em {
+  display: block;
+}
+
+.spoke strong {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.spoke em {
+  margin-top: 2px;
+  color: #9a938b;
+  font-style: normal;
+  font-size: 12px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.spoke-btns,
+.interest-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #ece7df;
+  color: #1c1a17;
+  line-height: 1;
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  font-size: 13px;
+  color: #6b6560;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.editor {
+  padding: 16px;
+  border: 1px solid #d9d2c8;
+  border-radius: 10px;
+  background: #fffcf7;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.add-row input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d9d2c8;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.add-row button {
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #1c1a17;
+  color: #fffcf7;
+  font-size: 14px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.add-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.interest-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 0 0;
+  border-top: 1px solid #e6e0d6;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.interest-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.interest-name strong {
+  flex: 1;
+  min-width: 0;
+}
+
+.text-btn {
+  border: 0;
+  background: transparent;
+  color: #9a938b;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.interest-row {
+  justify-content: flex-start;
+  font-size: 13px;
+  color: #6b6560;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.interest-row em {
+  margin-left: auto;
+  font-style: normal;
+  color: #9a938b;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid #d9d2c8;
+  border-radius: 10px;
+  background: #fffcf7;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+th:nth-child(2),
+th:nth-child(3),
+th:nth-child(4),
+td:nth-child(2),
+td:nth-child(3),
+td:nth-child(4) {
+  text-align: right;
+}
+
+thead {
+  color: #6b6560;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+tbody tr + tr td {
+  border-top: 1px solid #eee8df;
+}
+
+tbody td:first-child {
+  padding-left: 12px;
+}
+
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hero h1 {
+    font-size: 28px;
+  }
+}
