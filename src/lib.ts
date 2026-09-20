@@ -373,6 +373,57 @@ export function isAppPersist(value: unknown): value is AppPersist {
   );
 }
 
+export const BACKUP_KIND = "wheel-of-balance-backup";
+export const BACKUP_VERSION = 8;
+
+export function sanitizePersist(store: AppPersist): AppPersist {
+  return {
+    feelWeek: sanitizeWeek(store.feelWeek),
+    actualByDate: Object.fromEntries(
+      Object.entries(store.actualByDate).map(([key, items]) => [
+        key,
+        clampDayMinutes(items.map((item) => migrateInterest(item))),
+      ]),
+    ),
+    runningTimer: store.runningTimer,
+    feelConfirmed: store.feelConfirmed,
+    introSeen: store.introSeen,
+  };
+}
+
+export function buildBackup(store: AppPersist) {
+  return {
+    kind: BACKUP_KIND,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    ...store,
+  };
+}
+
+export function parseBackup(value: unknown): AppPersist | null {
+  if (isAppPersist(value)) return sanitizePersist(value);
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const loose = {
+    feelWeek: record.feelWeek,
+    actualByDate: record.actualByDate ?? {},
+    runningTimer: record.runningTimer ?? null,
+    feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
+    introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
+  };
+  if (isAppPersist(loose)) return sanitizePersist(loose);
+  if (isWeekPlan(value)) {
+    return {
+      feelWeek: sanitizeWeek(value),
+      actualByDate: {},
+      runningTimer: null,
+      feelConfirmed: true,
+      introSeen: true,
+    };
+  }
+  return null;
+}
+
 export function polar(index: number, count: number, radius: number) {
   const theta = (index / count) * Math.PI * 2;
   return {

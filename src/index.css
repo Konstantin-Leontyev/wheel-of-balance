@@ -43,11 +43,39 @@ h3 {
 }
 
 .feel-banner,
-.timer {
+.timer,
+.backup {
   padding: 16px;
   border: 1px solid #d9d2c8;
   border-radius: 12px;
   background: #fffcf7;
+}
+
+.backup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup strong {
+  display: block;
+  font-size: 16px;
+}
+
+.backup p {
+  margin: 4px 0 0;
+  color: #6b6560;
+  font-size: 13px;
+  line-height: 1.45;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .feel-banner {
@@ -355,6 +383,15 @@ h3 {
 
 .toast.warning strong {
   color: #9a7010;
+}
+
+.toast.success {
+  border-color: #b7dcc9;
+  background: #f3faf6;
+}
+
+.toast.success strong {
+  color: #2a9a6a;
 }
 
 @keyframes toast-in {

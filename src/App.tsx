@@ -20,6 +20,7 @@ import {
   addActualMinutes,
   actualDayFor,
   aggregateWeek,
+  buildBackup,
   clampDayMinutes,
   closedCurve,
   colorAtLevel,
@@ -32,13 +33,12 @@ import {
   formatDateTitle,
   formatElapsed,
   formatMinutes,
-  isAppPersist,
   isSleepInterest,
   isWeekPlan,
   mergeInterestLists,
-  migrateInterest,
   nextListMinutes,
   nextWheelMinutes,
+  parseBackup,
   palette,
   parseDateKey,
   polar,
@@ -62,7 +62,7 @@ const LEGACY_KEY = "wheel-of-balance-v7";
 
 type ToastItem = {
   id: number;
-  tone: "danger" | "warning";
+  tone: "danger" | "warning" | "success";
   title: string;
   body: string;
 };
@@ -72,18 +72,8 @@ function loadStore(): AppPersist {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
-      if (isAppPersist(parsed)) {
-        return {
-          ...parsed,
-          feelWeek: sanitizeWeek(parsed.feelWeek),
-          actualByDate: Object.fromEntries(
-            Object.entries(parsed.actualByDate).map(([key, items]) => [
-              key,
-              clampDayMinutes(items.map((item) => migrateInterest(item))),
-            ]),
-          ),
-        };
-      }
+      const backup = parseBackup(parsed);
+      if (backup) return backup;
     }
   } catch {
     /* keep looking */
@@ -155,6 +145,7 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const toastSeq = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
   const isMobile = useMediaQuery("(max-width: 720px)");
   const todayKey = useTodayKey();
   const viewMode = store.feelConfirmed ? mode : "feel";
@@ -478,6 +469,55 @@ export default function App() {
     }
   }
 
+  async function saveBackup() {
+    const payload = JSON.stringify(buildBackup(store), null, 2);
+    const name = `karta-balansa-${todayKey}.json`;
+    const file = new File([payload], name, { type: "application/json" });
+    try {
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "Карта баланса",
+          text: "Запасная копия данных",
+        });
+        addToast("success", "Файл готов", "Сохраните его в Файлы или отправьте себе.");
+        return;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    addToast("success", "Файл скачан", "Положите его в надёжное место — это запасная копия.");
+  }
+
+  function loadBackupFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed: unknown = JSON.parse(String(reader.result));
+        const next = parseBackup(parsed);
+        if (!next) {
+          addToast("danger", "Файл не подошёл", "Это не копия карты баланса.");
+          return;
+        }
+        setStore(next);
+        setMode(next.feelConfirmed ? "fact" : "feel");
+        addToast("success", "Данные восстановлены", "Копия загружена на это устройство.");
+      } catch {
+        addToast("danger", "Файл не прочитался", "Выберите JSON, который скачали из приложения.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
   function resetView() {
     if (viewMode === "feel") {
       setStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
@@ -575,7 +615,8 @@ export default function App() {
               </p>
               <p>
                 Чтобы открывать с телефона как приложение: в Safari «Поделиться» →
-                «На экран Домой». Данные останутся в этом браузере.
+                «На экран Домой». Данные останутся в этом браузере. Перед обновлением
+                сайта нажмите «Скачать файл» — так копия не потеряется.
               </p>
 
               <h2>Границы</h2>
@@ -681,6 +722,47 @@ export default function App() {
           onStop={stopTimer}
         />
       ) : null}
+
+      <section className="backup">
+        <div>
+          <strong>Запасная копия</strong>
+          <p>
+            Обновление сайта само сейв не сотрёт. Файл нужен, если почистите
+            браузер или смените телефон.
+          </p>
+        </div>
+        <div className="backup-actions">
+          <button type="button" className="pill ghost" onClick={() => void saveBackup()}>
+            Скачать файл
+          </button>
+          <button
+            type="button"
+            className="pill"
+            onClick={() => fileInput.current?.click()}
+          >
+            Загрузить
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              if (
+                !window.confirm(
+                  "Загрузка заменит текущие данные на этом устройстве. Продолжить?",
+                )
+              ) {
+                return;
+              }
+              loadBackupFile(file);
+            }}
+          />
+        </div>
+      </section>
 
       <section className="stats" aria-label="Часы недели">
         <Stat value={`${WEEK_HOURS} ч`} label="Всего в неделе" />
