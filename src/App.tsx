@@ -582,8 +582,11 @@ export default function App() {
   const usageCapLabel =
     viewMode === "feel" || !isMobile ? `${WEEK_HOURS} ч` : `${DAY_HOURS} ч`;
 
+  const lockViewport =
+    store.feelConfirmed && (mobileTab === "timer" || mobileTab === "map");
+
   return (
-    <div className="page">
+    <div className={lockViewport ? "page page-fit" : "page"}>
       <header className="mobile-toolbar">
         <div className="mobile-toolbar-text">
           <strong>Карта баланса</strong>
@@ -1087,43 +1090,45 @@ function TimerPanel({
 
   return (
     <section className={`timer${className ? ` ${className}` : ""}`} aria-label="Секундомер">
-      <p className="timer-date">{formatDateTitle(dateKey)}</p>
-      <SphereDrum
-        spheres={spheres}
-        value={pickedId}
-        disabled={locked}
-        onChange={setUserPickedId}
-      />
-      <p className="timer-time" aria-live="polite">
-        {elapsed}
-      </p>
-      <p className="timer-running">
-        {runningId && runningLabel
-          ? paused
-            ? `Пауза: ${runningLabel}`
-            : `Идёт: ${runningLabel}`
-          : "Прокрутите барабан и нажмите Старт"}
-      </p>
-      <div className="timer-actions">
-        {runningId && !paused ? (
-          <button type="button" className="pill timer-btn" onClick={onPause}>
-            Пауза
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="pill timer-btn"
-            disabled={!selected}
-            onClick={() => selected && onStart(selected.id)}
-          >
-            Старт
-          </button>
-        )}
-        {runningId && paused ? (
-          <button type="button" className="pill ghost timer-btn" onClick={onStop}>
-            Стоп
-          </button>
-        ) : null}
+      <div className="timer-stage">
+        <p className="timer-date">{formatDateTitle(dateKey)}</p>
+        <SphereDrum
+          spheres={spheres}
+          value={pickedId}
+          disabled={locked}
+          onChange={setUserPickedId}
+        />
+        <p className="timer-time" aria-live="polite">
+          {elapsed}
+        </p>
+        <p className="timer-running">
+          {runningId && runningLabel
+            ? paused
+              ? `Пауза: ${runningLabel}`
+              : `Идёт: ${runningLabel}`
+            : "Прокрутите барабан и нажмите Старт"}
+        </p>
+        <div className="timer-actions">
+          {runningId && !paused ? (
+            <button type="button" className="pill timer-btn" onClick={onPause}>
+              Пауза
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="pill timer-btn"
+              disabled={!selected}
+              onClick={() => selected && onStart(selected.id)}
+            >
+              Старт
+            </button>
+          )}
+          {runningId && paused ? (
+            <button type="button" className="pill ghost timer-btn" onClick={onStop}>
+              Стоп
+            </button>
+          ) : null}
+        </div>
       </div>
     </section>
   );

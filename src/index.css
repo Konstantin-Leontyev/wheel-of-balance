@@ -118,6 +118,14 @@ h3 {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
+}
+
+.timer-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
   gap: 10px;
 }
 
@@ -1045,9 +1053,89 @@ tbody td:first-child {
 }
 
 @media (max-width: 720px) {
+  html:has(.page-fit),
+  html:has(.page-fit) body,
+  html:has(.page-fit) #root {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   .page {
     padding: 0 12px calc(84px + env(safe-area-inset-bottom));
     gap: 16px;
+  }
+
+  .page.page-fit {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+    gap: 0;
+  }
+
+  .page.page-fit .mobile-toolbar {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .page.page-fit .timer,
+  .page.page-fit .layout {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .page.page-fit .layout {
+    container-type: size;
+  }
+
+  .page.page-fit .timer {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .page.page-fit .timer-stage {
+    width: 100%;
+    height: 100%;
+    justify-content: center;
+    gap: 12px;
+    overflow: hidden;
+  }
+
+  .page.page-fit .timer-actions {
+    justify-content: center;
+  }
+
+  .page.page-fit .map-panel {
+    width: min(100cqw, 100cqh);
+    height: min(100cqw, 100cqh);
+    max-width: 100%;
+    max-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .page.page-fit .wheel-slot {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+  }
+
+  .page.page-fit .wheel {
+    width: 100%;
+    max-width: none;
+  }
+
+  .usage {
+    display: none;
   }
 
   .tab-hidden {
