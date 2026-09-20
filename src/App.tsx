@@ -17,7 +17,8 @@ import {
   WEEK_HOURS,
   WORK_NORM_MINUTES,
   WHEEL_STEP_MINUTES,
-  addActualMinutes,
+  allocateTimerMinutes,
+  applyMinutesByDates,
   actualDayFor,
   aggregateWeek,
   buildBackup,
@@ -34,12 +35,16 @@ import {
   formatMonthTitle,
   formatMinutes,
   isSleepInterest,
+  isSleepTimerId,
   isWeekPlan,
   mergeInterestLists,
   monthCells,
   nextListMinutes,
   nextWheelMinutes,
   normalizeRunningTimer,
+  pauseRunningTimer,
+  resumeRunningTimer,
+  startRunningTimer,
   parseBackup,
   palette,
   parseDateKey,
@@ -147,6 +152,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [seq, setSeq] = useState(20);
   const [introOpen, setIntroOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<"map" | "timer" | "calendar" | "export" | "import">(
     "timer",
   );
@@ -190,9 +196,11 @@ export default function App() {
   }, [store.runningTimer]);
 
   useEffect(() => {
-    if (!introOpen) return;
+    if (!introOpen && !resetOpen) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") closeIntro();
+      if (event.key !== "Escape") return;
+      if (resetOpen) setResetOpen(false);
+      else closeIntro();
     }
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
@@ -202,7 +210,7 @@ export default function App() {
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
     };
-  }, [introOpen]);
+  }, [introOpen, resetOpen]);
 
   function addToast(tone: ToastItem["tone"], title: string, body: string) {
     const id = ++toastSeq.current;
@@ -271,9 +279,7 @@ export default function App() {
         : mergeInterestLists(weekActualLists),
     [viewMode, store.feelWeek, weekActualLists],
   );
-  const timerSpheres = actualDayFor(store.actualByDate, todayKey, store.feelWeek).filter(
-    (item) => !isSleepInterest(item),
-  );
+  const timerSpheres = actualDayFor(store.actualByDate, todayKey, store.feelWeek);
   const running = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
   const runningItem = running
     ? timerSpheres.find((item) => item.id === running.interestId) ??
@@ -448,21 +454,13 @@ export default function App() {
     if (current && current.runningSince == null) {
       setStore((prev) => ({
         ...prev,
-        runningTimer: {
-          ...normalizeRunningTimer(prev.runningTimer ?? current),
-          runningSince: Date.now(),
-        },
+        runningTimer: resumeRunningTimer(prev.runningTimer ?? current),
       }));
       return;
     }
     setStore((prev) => ({
       ...prev,
-      runningTimer: {
-        interestId,
-        dateKey: todayKey,
-        accumulatedMs: 0,
-        runningSince: Date.now(),
-      },
+      runningTimer: startRunningTimer(interestId, todayKey),
     }));
   }
 
@@ -471,18 +469,15 @@ export default function App() {
     if (!current || current.runningSince == null) return;
     setStore((prev) => ({
       ...prev,
-      runningTimer: {
-        ...current,
-        accumulatedMs: timerElapsedMs(current),
-        runningSince: null,
-      },
+      runningTimer: pauseRunningTimer(prev.runningTimer ?? current),
     }));
   }
 
   function stopTimer() {
     const timer = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
     if (!timer) return;
-    const minutes = Math.floor(timerElapsedMs(timer) / 60_000);
+    const now = Date.now();
+    const minutes = Math.floor(timerElapsedMs(timer, now) / 60_000);
     if (minutes < 1) {
       setStore((prev) => ({ ...prev, runningTimer: null }));
       addToast(
@@ -492,37 +487,52 @@ export default function App() {
       );
       return;
     }
-    const dayItems = actualDayFor(store.actualByDate, timer.dateKey, store.feelWeek);
-    const { items, added } = addActualMinutes(dayItems, timer.interestId, minutes);
+    const template = actualDayFor(store.actualByDate, timer.dateKey, store.feelWeek);
+    const splitByDate = isSleepTimerId(timer.interestId, template);
+    const chunks = allocateTimerMinutes(timer, now, splitByDate);
+    const result = applyMinutesByDates(
+      store.actualByDate,
+      store.feelWeek,
+      timer.interestId,
+      chunks,
+    );
     setStore((prev) => ({
       ...prev,
       runningTimer: null,
-      actualByDate: { ...prev.actualByDate, [timer.dateKey]: items },
+      actualByDate: result.actualByDate,
     }));
-    if (added === 0) {
+    if (result.added === 0) {
       addToast(
         "warning",
         "В сутках только 24 часа",
         "Этот день уже заполнен. Сессия не записалась.",
       );
-    } else if (added < minutes) {
+    } else if (result.added < result.asked) {
       addToast(
         "warning",
         "Записана часть времени",
-        `Влезло только ${formatMinutes(added)} из ${formatMinutes(minutes)}.`,
+        `Влезло только ${formatMinutes(result.added)} из ${formatMinutes(result.asked)}.`,
+      );
+    } else if (splitByDate && result.parts.length > 1) {
+      addToast(
+        "success",
+        "Сон по суткам",
+        result.parts
+          .map((part) => `${formatMinutes(part.added)} — ${formatDateTitle(part.dateKey)}`)
+          .join(". "),
       );
     }
   }
 
   async function saveBackup() {
     const payload = JSON.stringify(buildBackup(store), null, 2);
-    const name = `karta-balansa-${todayKey}.json`;
+    const name = `koleso-balansa-${todayKey}.json`;
     const file = new File([payload], name, { type: "application/json" });
     try {
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
         await navigator.share({
           files: [file],
-          title: "Карта баланса",
+          title: "Колесо баланса",
           text: "Запасная копия данных",
         });
         addToast("success", "Файл готов", "Сохраните его в Файлы или отправьте себе.");
@@ -550,7 +560,7 @@ export default function App() {
         const parsed: unknown = JSON.parse(String(reader.result));
         const next = parseBackup(parsed);
         if (!next) {
-          addToast("danger", "Файл не подошёл", "Это не копия карты баланса.");
+          addToast("danger", "Файл не подошёл", "Это не копия колеса баланса.");
           return;
         }
         setStore(next);
@@ -566,13 +576,14 @@ export default function App() {
   function resetView() {
     if (viewMode === "feel") {
       setStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
-      return;
+    } else {
+      setStore((prev) => {
+        const next = { ...prev.actualByDate };
+        delete next[viewDateKey];
+        return { ...prev, actualByDate: next };
+      });
     }
-    setStore((prev) => {
-      const next = { ...prev.actualByDate };
-      delete next[viewDateKey];
-      return { ...prev, actualByDate: next };
-    });
+    setResetOpen(false);
   }
 
   const usageTotal = viewMode === "feel" || !isMobile ? WEEK_MINUTES : DAY_MINUTES;
@@ -584,17 +595,21 @@ export default function App() {
 
   const lockViewport =
     store.feelConfirmed && (mobileTab === "timer" || mobileTab === "map");
+  const showToolbar = !store.feelConfirmed || mobileTab !== "timer";
 
   return (
-    <div className={lockViewport ? "page page-fit" : "page"}>
-      <header className="mobile-toolbar">
-        <div className="mobile-toolbar-text">
-          <strong>Карта баланса</strong>
-          <span>
-            {!store.feelConfirmed
-              ? "Сферы интересов"
-              : mobileTab === "timer"
-                ? "Секундомер"
+    <div
+      className={`page${lockViewport ? " page-fit" : ""}${
+        store.feelConfirmed && mobileTab === "timer" ? " page-timer" : ""
+      }`}
+    >
+      {showToolbar ? (
+        <header className="mobile-toolbar">
+          <div className="mobile-toolbar-text">
+            <strong>Колесо баланса</strong>
+            <span>
+              {!store.feelConfirmed
+                ? "Сферы интересов"
                 : mobileTab === "calendar"
                   ? "Календарь"
                   : mobileTab === "export"
@@ -602,14 +617,15 @@ export default function App() {
                     : mobileTab === "import"
                       ? "Загрузка"
                       : formatDateTitle(viewDateKey)}
-          </span>
-        </div>
-        {store.feelConfirmed && (mobileTab === "map" || mobileTab === "timer") ? (
-          <button type="button" className="pill" onClick={resetView}>
-            Сброс
-          </button>
-        ) : null}
-      </header>
+            </span>
+          </div>
+          {store.feelConfirmed && mobileTab === "map" ? (
+            <button type="button" className="pill" onClick={() => setResetOpen(true)}>
+              Сброс
+            </button>
+          ) : null}
+        </header>
+      ) : null}
       {introOpen ? (
         <div className="modal-backdrop" onClick={closeIntro}>
           <div
@@ -620,7 +636,7 @@ export default function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-body">
-              <h1 id="intro-title">Карта баланса с привязкой ко времени</h1>
+              <h1 id="intro-title">Колесо баланса с привязкой ко времени</h1>
 
               <h2>Два ключевых принципа</h2>
               <p>
@@ -650,14 +666,14 @@ export default function App() {
                 </li>
               </ul>
 
-              <h2>Почему карта привязана ко времени</h2>
+              <h2>Почему колесо привязано ко времени</h2>
               <p>
                 Время — это независящий от вас ресурс. Вы не можете остановить
                 время равно как не можете добавить часов в сутках.
               </p>
               <p>
                 Каждый час, отданный одной сфере, забран у другой. Это и есть
-                главный смысл карты:{" "}
+                главный смысл колеса:{" "}
                 <strong>
                   усилиться в одном можно только ценой просадки в другом.
                 </strong>{" "}
@@ -665,17 +681,17 @@ export default function App() {
                 решаете только вы.
               </p>
 
-              <h2>Как работать с картой</h2>
+              <h2>Как работать с колесом</h2>
               <ol>
                 <li>
-                  Заполните карту так, как <strong>вам кажется</strong> — как вы
+                  Заполните колесо так, как <strong>вам кажется</strong> — как вы
                   распределяете своё время. Можно пропустить.
                 </li>
                 <li>
                   Дальше каждый день засекайте сферы секундомером: сели —
                   Старт, закончили — Стоп. Время пишется в сегодняшнюю дату.
                 </li>
-                <li>К концу недели карта — это уже факт, не ощущение.</li>
+                <li>К концу недели колесо — это уже факт, не ощущение.</li>
               </ol>
               <p>
                 Разница между первой версией и неделей с таймера — это и есть
@@ -759,6 +775,35 @@ export default function App() {
             <div className="modal-actions">
               <button type="button" className="pill" onClick={closeIntro}>
                 Начать
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {resetOpen ? (
+        <div className="modal-backdrop" onClick={() => setResetOpen(false)}>
+          <div
+            className="modal modal-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-body">
+              <h2 id="reset-title">Сбросить этот день?</h2>
+              <p>
+                {viewMode === "feel"
+                  ? "Сферы вернутся к стартовому набору."
+                  : "Записанное время за этот день пропадёт с колеса."}
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="pill ghost" onClick={() => setResetOpen(false)}>
+                Отмена
+              </button>
+              <button type="button" className="pill" onClick={resetView}>
+                Сбросить
               </button>
             </div>
           </div>
@@ -930,7 +975,7 @@ export default function App() {
         <div className={`layout${mobileTab !== "map" ? " tab-hidden" : ""}`}>
           <section className="map-panel">
             <div className="map-head">
-              <h2>Карта дня</h2>
+              <h2>Колесо дня</h2>
               <div className="map-actions">
                 {store.feelConfirmed && !store.feelSkipped && !isMobile ? (
                   <button
@@ -941,7 +986,7 @@ export default function App() {
                     {viewMode === "feel" ? "К факту" : "Как чувствую"}
                   </button>
                 ) : null}
-                <button type="button" className="pill" onClick={resetView}>
+                <button type="button" className="pill" onClick={() => setResetOpen(true)}>
                   Сброс
                 </button>
               </div>
@@ -1008,7 +1053,7 @@ export default function App() {
         <nav className="tabbar" aria-label="Разделы">
           <TabButton
             id="map"
-            label="Карта"
+            label="Колесо"
             active={mobileTab === "map"}
             onClick={() => setMobileTab("map")}
           />
@@ -1091,43 +1136,45 @@ function TimerPanel({
   return (
     <section className={`timer${className ? ` ${className}` : ""}`} aria-label="Секундомер">
       <div className="timer-stage">
-        <p className="timer-date">{formatDateTitle(dateKey)}</p>
-        <SphereDrum
-          spheres={spheres}
-          value={pickedId}
-          disabled={locked}
-          onChange={setUserPickedId}
-        />
+        <div className="timer-above">
+          <p className="timer-date">{formatDateTitle(dateKey)}</p>
+          <SphereDrum
+            spheres={spheres}
+            value={pickedId}
+            disabled={locked}
+            onChange={setUserPickedId}
+          />
+        </div>
         <p className="timer-time" aria-live="polite">
           {elapsed}
         </p>
-        <p className="timer-running">
-          {runningId && runningLabel
-            ? paused
-              ? `Пауза: ${runningLabel}`
-              : `Идёт: ${runningLabel}`
-            : "Прокрутите барабан и нажмите Старт"}
-        </p>
-        <div className="timer-actions">
-          {runningId && !paused ? (
-            <button type="button" className="pill timer-btn" onClick={onPause}>
-              Пауза
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="pill timer-btn"
-              disabled={!selected}
-              onClick={() => selected && onStart(selected.id)}
-            >
-              Старт
-            </button>
-          )}
-          {runningId && paused ? (
-            <button type="button" className="pill ghost timer-btn" onClick={onStop}>
-              Стоп
-            </button>
+        <div className="timer-below">
+          {runningId && runningLabel ? (
+            <p className="timer-running">
+              {paused ? `Пауза: ${runningLabel}` : `Идёт: ${runningLabel}`}
+            </p>
           ) : null}
+          <div className="timer-actions">
+            {runningId && !paused ? (
+              <button type="button" className="pill timer-btn" onClick={onPause}>
+                Пауза
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="pill timer-btn"
+                disabled={!selected}
+                onClick={() => selected && onStart(selected.id)}
+              >
+                Старт
+              </button>
+            )}
+            {runningId && paused ? (
+              <button type="button" className="pill ghost timer-btn" onClick={onStop}>
+                Стоп
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     </section>
@@ -1414,7 +1461,7 @@ function BalanceWheel({
 
   return (
     <div className="wheel">
-      <svg viewBox={`0 0 ${VIEW} ${VIEW}`} role="img" aria-label="Карта баланса интересов за выбранный день">
+      <svg viewBox={`0 0 ${VIEW} ${VIEW}`} role="img" aria-label="Колесо баланса интересов за выбранный день">
         <defs>
           <clipPath id="wheel-fill-clip">
             <path d={path} />

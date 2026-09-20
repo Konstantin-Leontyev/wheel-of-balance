@@ -104,11 +104,17 @@ export function defaultWeek(): WeekPlan {
 
 export type DateKey = string;
 
+export type TimerRun = {
+  startedAt: number;
+  endedAt: number;
+};
+
 export type RunningTimer = {
   interestId: string;
   dateKey: DateKey;
   accumulatedMs: number;
   runningSince: number | null;
+  runs: TimerRun[];
 };
 
 export type AppPersist = {
@@ -183,33 +189,193 @@ export function elapsedMinutes(startedAt: number, endedAt = Date.now()): number 
   return Math.floor(Math.max(0, endedAt - startedAt) / 60_000);
 }
 
+function sanitizeRuns(value: unknown): TimerRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const run = item as Record<string, unknown>;
+    if (typeof run.startedAt !== "number" || typeof run.endedAt !== "number") return [];
+    if (run.endedAt < run.startedAt) return [];
+    return [{ startedAt: run.startedAt, endedAt: run.endedAt }];
+  });
+}
+
 export function normalizeRunningTimer(value: {
   interestId: string;
   dateKey: DateKey;
   accumulatedMs?: number;
   runningSince?: number | null;
   startedAt?: number;
+  runs?: TimerRun[];
 }): RunningTimer {
+  const runs = sanitizeRuns(value.runs);
+  const runMs = runs.reduce((sum, run) => sum + (run.endedAt - run.startedAt), 0);
   if (typeof value.accumulatedMs === "number") {
     return {
       interestId: value.interestId,
       dateKey: value.dateKey,
-      accumulatedMs: value.accumulatedMs,
+      accumulatedMs: runs.length > 0 ? runMs : value.accumulatedMs,
       runningSince: typeof value.runningSince === "number" ? value.runningSince : null,
+      runs,
     };
   }
   return {
     interestId: value.interestId,
     dateKey: value.dateKey,
-    accumulatedMs: 0,
+    accumulatedMs: runMs,
     runningSince: typeof value.startedAt === "number" ? value.startedAt : null,
+    runs,
   };
 }
 
 export function timerElapsedMs(timer: RunningTimer, now = Date.now()): number {
   const current = normalizeRunningTimer(timer);
+  const fromRuns = current.runs.reduce((sum, run) => sum + (run.endedAt - run.startedAt), 0);
   const live = current.runningSince != null ? Math.max(0, now - current.runningSince) : 0;
+  if (current.runs.length > 0) return fromRuns + live;
   return current.accumulatedMs + live;
+}
+
+export function startRunningTimer(
+  interestId: string,
+  dateKey: DateKey,
+  now = Date.now(),
+): RunningTimer {
+  return {
+    interestId,
+    dateKey,
+    accumulatedMs: 0,
+    runningSince: now,
+    runs: [],
+  };
+}
+
+export function pauseRunningTimer(timer: RunningTimer, now = Date.now()): RunningTimer {
+  const current = normalizeRunningTimer(timer);
+  if (current.runningSince == null) return current;
+  const runs = [...current.runs, { startedAt: current.runningSince, endedAt: now }];
+  return {
+    ...current,
+    runs,
+    accumulatedMs: timerElapsedMs(current, now),
+    runningSince: null,
+  };
+}
+
+export function resumeRunningTimer(timer: RunningTimer, now = Date.now()): RunningTimer {
+  const current = normalizeRunningTimer(timer);
+  if (current.runningSince != null) return current;
+  return { ...current, runningSince: now };
+}
+
+export function startOfLocalDay(ms: number): number {
+  const date = new Date(ms);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+export function startOfNextLocalDay(ms: number): number {
+  const date = new Date(startOfLocalDay(ms));
+  date.setDate(date.getDate() + 1);
+  return date.getTime();
+}
+
+export function splitMsByLocalDate(
+  startedAt: number,
+  endedAt: number,
+): Array<{ dateKey: DateKey; ms: number }> {
+  const slices: Array<{ dateKey: DateKey; ms: number }> = [];
+  let start = startedAt;
+  const end = Math.max(startedAt, endedAt);
+  while (start < end) {
+    const next = startOfNextLocalDay(start);
+    const sliceMs = Math.min(end, next) - start;
+    const dateKey = toDateKey(new Date(start));
+    const last = slices[slices.length - 1];
+    if (last && last.dateKey === dateKey) last.ms += sliceMs;
+    else slices.push({ dateKey, ms: sliceMs });
+    start += sliceMs;
+  }
+  return slices;
+}
+
+export function isSleepTimerId(interestId: string, items: Interest[] = []): boolean {
+  if (interestId === "sleep") return true;
+  return items.some((item) => item.id === interestId && item.locked);
+}
+
+export function allocateTimerMinutes(
+  timer: RunningTimer,
+  now = Date.now(),
+  splitByDate = false,
+): Array<{ dateKey: DateKey; minutes: number }> {
+  const current = normalizeRunningTimer(timer);
+  const totalMinutes = Math.floor(timerElapsedMs(current, now) / 60_000);
+  if (totalMinutes < 1) return [];
+  if (!splitByDate) {
+    return [{ dateKey: current.dateKey, minutes: totalMinutes }];
+  }
+
+  const msByDate = new Map<DateKey, number>();
+  if (current.runs.length === 0 && current.accumulatedMs > 0) {
+    msByDate.set(current.dateKey, current.accumulatedMs);
+  }
+  const openRuns: TimerRun[] = [...current.runs];
+  if (current.runningSince != null) {
+    openRuns.push({ startedAt: current.runningSince, endedAt: now });
+  }
+  for (const run of openRuns) {
+    for (const slice of splitMsByLocalDate(run.startedAt, run.endedAt)) {
+      msByDate.set(slice.dateKey, (msByDate.get(slice.dateKey) ?? 0) + slice.ms);
+    }
+  }
+
+  const rows = [...msByDate.entries()].map(([dateKey, ms]) => ({
+    dateKey,
+    minutes: Math.floor(ms / 60_000),
+    rem: ms % 60_000,
+  }));
+  const leftovers = [...rows].sort((a, b) => b.rem - a.rem);
+  let extra = totalMinutes - rows.reduce((sum, row) => sum + row.minutes, 0);
+  let index = 0;
+  while (extra > 0 && leftovers.length > 0) {
+    leftovers[index % leftovers.length].minutes += 1;
+    extra -= 1;
+    index += 1;
+  }
+  return leftovers
+    .filter((row) => row.minutes > 0)
+    .sort((a, b) => (a.dateKey < b.dateKey ? -1 : 1))
+    .map(({ dateKey, minutes }) => ({ dateKey, minutes }));
+}
+
+export function applyMinutesByDates(
+  actualByDate: Record<DateKey, Interest[]>,
+  feelWeek: WeekPlan,
+  interestId: string,
+  chunks: Array<{ dateKey: DateKey; minutes: number }>,
+): {
+  actualByDate: Record<DateKey, Interest[]>;
+  added: number;
+  asked: number;
+  parts: Array<{ dateKey: DateKey; minutes: number; added: number }>;
+} {
+  let next = { ...actualByDate };
+  let added = 0;
+  const parts: Array<{ dateKey: DateKey; minutes: number; added: number }> = [];
+  for (const chunk of chunks) {
+    if (chunk.minutes <= 0) continue;
+    const day = actualDayFor(next, chunk.dateKey, feelWeek);
+    const result = addActualMinutes(day, interestId, chunk.minutes);
+    next = { ...next, [chunk.dateKey]: result.items };
+    added += result.added;
+    parts.push({ dateKey: chunk.dateKey, minutes: chunk.minutes, added: result.added });
+  }
+  return {
+    actualByDate: next,
+    added,
+    asked: chunks.reduce((sum, chunk) => sum + Math.max(0, chunk.minutes), 0),
+    parts,
+  };
 }
 
 export function monthCells(
