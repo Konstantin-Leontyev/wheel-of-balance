@@ -3,8 +3,10 @@ import {
   CX,
   CY,
   DAYS,
+  DAY_HOURS,
   DAY_MINUTES,
   LABEL_R,
+  LIST_STEP_DAILY_MINUTES,
   MAX_INTERESTS,
   MAX_R,
   MAX_MINUTES_PER_INTEREST,
@@ -14,31 +16,49 @@ import {
   VIEW,
   WEEK_HOURS,
   WORK_NORM_MINUTES,
+  WHEEL_STEP_MINUTES,
+  addActualMinutes,
+  actualDayFor,
   aggregateWeek,
+  clampDayMinutes,
   closedCurve,
   colorAtLevel,
   dailyMinutes,
+  dateKeyToDayId,
+  dayUsedMinutes,
   defaultWeek,
+  elapsedMinutes,
   floorFor,
+  formatDateTitle,
+  formatElapsed,
   formatMinutes,
+  isAppPersist,
+  isSleepInterest,
   isWeekPlan,
+  mergeInterestLists,
   migrateInterest,
   nextListMinutes,
   nextWheelMinutes,
   palette,
+  parseDateKey,
   polar,
   levelValue,
+  sanitizeWeek,
+  todayDateKey,
   todayDayId,
   toneForInterest,
+  weekDateKeys,
   weekLevelValue,
   weekToneForInterest,
   weekUsedMinutes,
+  type AppPersist,
+  type DateKey,
   type DayId,
   type Interest,
-  type WeekPlan,
 } from "./lib";
 
-const STORAGE_KEY = "wheel-of-balance-v7";
+const STORAGE_KEY = "wheel-of-balance-v8";
+const LEGACY_KEY = "wheel-of-balance-v7";
 
 type ToastItem = {
   id: number;
@@ -47,38 +67,138 @@ type ToastItem = {
   body: string;
 };
 
-function loadWeek(): WeekPlan {
+function loadStore(): AppPersist {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultWeek();
-    const parsed: unknown = JSON.parse(raw);
-    if (isWeekPlan(parsed)) {
-      const loaded = Object.fromEntries(
-        DAYS.map((day) => [
-          day.id,
-          parsed[day.id].map((item) => migrateInterest(item)),
-        ]),
-      ) as WeekPlan;
-      const dirty = DAYS.some((day) =>
-        loaded[day.id].some((item) => item.minutes % 10 !== 0),
-      );
-      if (!dirty) return loaded;
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (isAppPersist(parsed)) {
+        return {
+          ...parsed,
+          feelWeek: sanitizeWeek(parsed.feelWeek),
+          actualByDate: Object.fromEntries(
+            Object.entries(parsed.actualByDate).map(([key, items]) => [
+              key,
+              clampDayMinutes(items.map((item) => migrateInterest(item))),
+            ]),
+          ),
+        };
+      }
+    }
+  } catch {
+    /* keep looking */
+  }
+  try {
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy) {
+      const parsed: unknown = JSON.parse(legacy);
+      if (isWeekPlan(parsed)) {
+        return {
+          feelWeek: sanitizeWeek(parsed),
+          actualByDate: {},
+          runningTimer: null,
+          feelConfirmed: true,
+          introSeen: false,
+        };
+      }
     }
   } catch {
     /* keep default */
   }
-  return defaultWeek();
+  return {
+    feelWeek: defaultWeek(),
+    actualByDate: {},
+    runningTimer: null,
+    feelConfirmed: false,
+    introSeen: false,
+  };
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : false,
+  );
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const onChange = () => setMatches(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+function useTodayKey(): DateKey {
+  const [key, setKey] = useState(todayDateKey);
+  useEffect(() => {
+    const tick = () => setKey(todayDateKey());
+    const id = window.setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+  return key;
 }
 
 export default function App() {
-  const [week, setWeek] = useState<WeekPlan>(loadWeek);
-  const [dayId, setDayId] = useState<DayId>(todayDayId);
+  const [store, setStore] = useState<AppPersist>(loadStore);
+  const [pickedDayId, setPickedDayId] = useState<DayId>(todayDayId);
+  const [pickedDateKey, setPickedDateKey] = useState<DateKey>(todayDateKey);
+  const [mode, setMode] = useState<"feel" | "fact">(
+    store.feelConfirmed ? "fact" : "feel",
+  );
   const [draft, setDraft] = useState("");
   const [seq, setSeq] = useState(20);
-  const [introOpen, setIntroOpen] = useState(true);
+  const [introOpen, setIntroOpen] = useState(!store.introSeen);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [now, setNow] = useState(() => Date.now());
   const toastSeq = useRef(0);
-  const interests = week[dayId];
+  const isMobile = useMediaQuery("(max-width: 720px)");
+  const todayKey = useTodayKey();
+  const viewMode = store.feelConfirmed ? mode : "feel";
+  const dayId = isMobile ? dateKeyToDayId(todayKey) : pickedDayId;
+  const viewDateKey = isMobile ? todayKey : pickedDateKey;
+  const weekKeys = useMemo(() => weekDateKeys(parseDateKey(todayKey)), [todayKey]);
+
+  const interests =
+    viewMode === "feel"
+      ? store.feelWeek[dayId]
+      : actualDayFor(store.actualByDate, viewDateKey, store.feelWeek);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  }, [store]);
+
+  useEffect(() => {
+    if (!store.runningTimer) return;
+    const tick = () => setNow(Date.now());
+    const id = window.setInterval(tick, 250);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [store.runningTimer]);
+
+  useEffect(() => {
+    if (!introOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") closeIntro();
+    }
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    };
+  }, [introOpen]);
 
   function addToast(tone: ToastItem["tone"], title: string, body: string) {
     const id = ++toastSeq.current;
@@ -91,62 +211,107 @@ export default function App() {
     }, 5200);
   }
 
-  function setDayInterests(next: Interest[]) {
-    setWeek((prev) => ({ ...prev, [dayId]: next }));
+  function closeIntro() {
+    setIntroOpen(false);
+    setStore((prev) => ({ ...prev, introSeen: true }));
   }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(week));
-  }, [week]);
+  function setFeelDay(next: Interest[]) {
+    setStore((prev) => ({
+      ...prev,
+      feelWeek: { ...prev.feelWeek, [dayId]: clampDayMinutes(next) },
+    }));
+  }
 
-  useEffect(() => {
-    if (!introOpen) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setIntroOpen(false);
-    }
-    window.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
-  }, [introOpen]);
+  function setActualDay(dateKey: DateKey, next: Interest[]) {
+    setStore((prev) => ({
+      ...prev,
+      actualByDate: { ...prev.actualByDate, [dateKey]: clampDayMinutes(next) },
+    }));
+  }
 
-  const usedMinutes = weekUsedMinutes(week);
-  const freeMinutes = WEEK_MINUTES - usedMinutes;
+  function confirmFeel() {
+    setStore((prev) => ({ ...prev, feelConfirmed: true }));
+    setMode("fact");
+  }
+
+  const usedMinutesFeel = weekUsedMinutes(store.feelWeek);
+  const weekActualLists = weekKeys.map((key) =>
+    actualDayFor(store.actualByDate, key, store.feelWeek),
+  );
+  const usedMinutesActualWeek = weekActualLists.reduce(
+    (sum, items) => sum + dayUsedMinutes(items),
+    0,
+  );
+  const usedMinutesActualDay = dayUsedMinutes(
+    actualDayFor(store.actualByDate, viewDateKey, store.feelWeek),
+  );
+  const weekUsedForStats = viewMode === "feel" ? usedMinutesFeel : usedMinutesActualWeek;
+  const freeMinutes = WEEK_MINUTES - weekUsedForStats;
+  const dayRoom = Math.max(0, DAY_MINUTES - dayUsedMinutes(interests));
   const sleep = interests.find((item) => item.locked) ?? interests[0];
   const sleepLow = sleep.minutes < SLEEP_NORM_MINUTES;
   const sleepHigh = sleep.minutes > SLEEP_NORM_MINUTES;
   const work = interests.find((item) => item.id === "work");
   const workHigh = (work?.minutes ?? 0) > WORK_NORM_MINUTES;
   const canAdd = interests.length < MAX_INTERESTS;
-  const weeklyInterests = useMemo(() => aggregateWeek(week), [week]);
+  const weeklyInterests = useMemo(
+    () =>
+      viewMode === "feel"
+        ? aggregateWeek(store.feelWeek)
+        : mergeInterestLists(weekActualLists),
+    [viewMode, store.feelWeek, weekActualLists],
+  );
+  const timerSpheres = actualDayFor(store.actualByDate, todayKey, store.feelWeek).filter(
+    (item) => !isSleepInterest(item),
+  );
+  const running = store.runningTimer;
+  const runningItem = running
+    ? timerSpheres.find((item) => item.id === running.interestId) ??
+      interests.find((item) => item.id === running.interestId)
+    : undefined;
 
   function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
-    const used = interests.reduce((sum, item) => sum + item.minutes, 0);
+    if (viewMode === "fact") {
+      const current = interests.find((item) => item.id === id);
+      if (current && !isSleepInterest(current)) {
+        addToast(
+          "warning",
+          "Время — с таймера",
+          "Для этой сферы засеките время сверху. Руками правится только сон.",
+        );
+        return;
+      }
+    }
+
+    const used = dayUsedMinutes(interests);
     const current = interests.find((item) => item.id === id);
     if (!current) return;
-    const floor = floorFor(current);
-    const room = DAY_MINUTES - used;
+    const actual = viewMode === "fact";
+    const floor = floorFor(current, actual);
+    const room = Math.max(0, DAY_MINUTES - used);
     const next =
       source === "wheel"
         ? nextWheelMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room)
         : nextListMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room);
     if (next == null) {
-      if (dir < 0 && (current.id === "sleep" || current.locked) && current.minutes <= floor) {
+      if (
+        !actual &&
+        dir < 0 &&
+        (current.id === "sleep" || current.locked) &&
+        current.minutes <= floor
+      ) {
         addToast(
           "warning",
           "Сон нельзя снизить",
           "Ниже 4 ч в сутки опустить сон нельзя.",
         );
       }
-      if (dir > 0 && room <= 0) {
+      if (dir > 0 && room < (source === "wheel" ? WHEEL_STEP_MINUTES : LIST_STEP_DAILY_MINUTES)) {
         addToast(
           "warning",
-          "Свободных часов нет",
-          "Чтобы поднять одну сферу, сначала нажмите «−» на другой. Новые часы из ниоткуда не появляются.",
+          "В сутках только 24 часа",
+          "В этом дне больше нельзя добавить время. Чтобы поднять одну сферу, сначала уберите часы у другой.",
         );
       }
       return;
@@ -186,45 +351,156 @@ export default function App() {
     if (used < DAY_MINUTES && used - current.minutes + next >= DAY_MINUTES) {
       addToast(
         "warning",
-        "Свободных часов нет",
-        "Чтобы поднять одну сферу, сначала нажмите «−» на другой. Новые часы из ниоткуда не появляются.",
+        "В сутках только 24 часа",
+        "Этот день заполнен. Чтобы поднять одну сферу, сначала уберите часы у другой.",
       );
     }
-    setDayInterests(nextInterests);
+    if (viewMode === "feel") setFeelDay(nextInterests);
+    else setActualDay(viewDateKey, nextInterests);
   }
 
   function addInterest() {
     const name = draft.trim();
     if (!name || interests.length >= MAX_INTERESTS) return;
-    const existingId = DAYS.map((day) => week[day.id])
+    const existingId = [
+      ...DAYS.map((day) => store.feelWeek[day.id]),
+      ...Object.values(store.actualByDate),
+    ]
       .flat()
       .find((item) => item.name === name)?.id;
-    setDayInterests([
-      ...interests,
-      { id: existingId ?? `i-${seq}`, name, locked: false, minutes: 0 },
-    ]);
+    const id = existingId ?? `i-${seq}`;
+    const created: Interest = { id, name, locked: false, minutes: 0 };
     if (!existingId) setSeq((n) => n + 1);
     setDraft("");
+
+    if (viewMode === "feel") {
+      setFeelDay([...interests, created]);
+      return;
+    }
+
+    setStore((prev) => {
+      const feelWeek = Object.fromEntries(
+        DAYS.map((day) => {
+          const items = prev.feelWeek[day.id];
+          if (items.some((item) => item.id === id)) return [day.id, items];
+          return [day.id, [...items, { ...created }]];
+        }),
+      ) as AppPersist["feelWeek"];
+      const current = actualDayFor(prev.actualByDate, viewDateKey, feelWeek);
+      return {
+        ...prev,
+        feelWeek,
+        actualByDate: {
+          ...prev.actualByDate,
+          [viewDateKey]: clampDayMinutes(
+            current.some((item) => item.id === id) ? current : [...current, created],
+          ),
+        },
+      };
+    });
   }
 
   function removeInterest(id: string) {
-    setDayInterests(interests.filter((item) => item.id !== id || item.locked));
+    const next = interests.filter((item) => item.id !== id || item.locked);
+    if (viewMode === "feel") setFeelDay(next);
+    else setActualDay(viewDateKey, next);
   }
 
   function renameInterest(id: string, name: string) {
-    const next = name.trim();
-    if (!next) return;
-    setDayInterests(
-      interests.map((item) =>
-        item.id === id && !item.locked ? { ...item, name: next } : item,
+    const nextName = name.trim();
+    if (!nextName) return;
+    const rename = (items: Interest[]) =>
+      items.map((item) =>
+        item.id === id && !item.locked ? { ...item, name: nextName } : item,
+      );
+    if (viewMode === "feel") {
+      setFeelDay(rename(interests));
+      return;
+    }
+    setStore((prev) => ({
+      ...prev,
+      feelWeek: Object.fromEntries(
+        DAYS.map((day) => [day.id, rename(prev.feelWeek[day.id])]),
+      ) as AppPersist["feelWeek"],
+      actualByDate: Object.fromEntries(
+        Object.entries(prev.actualByDate).map(([key, items]) => [key, rename(items)]),
       ),
-    );
+    }));
   }
+
+  function startTimer(interestId: string) {
+    if (store.runningTimer) {
+      addToast("warning", "Таймер уже идёт", "Сначала остановите текущую сферу.");
+      return;
+    }
+    setStore((prev) => ({
+      ...prev,
+      runningTimer: {
+        interestId,
+        startedAt: Date.now(),
+        dateKey: todayKey,
+      },
+    }));
+  }
+
+  function stopTimer() {
+    const timer = store.runningTimer;
+    if (!timer) return;
+    const minutes = elapsedMinutes(timer.startedAt, Date.now());
+    if (minutes < 1) {
+      setStore((prev) => ({ ...prev, runningTimer: null }));
+      addToast(
+        "warning",
+        "Меньше минуты",
+        "Сессия короче минуты не записалась. Засеките ещё раз, когда сядете за дело.",
+      );
+      return;
+    }
+    const dayItems = actualDayFor(store.actualByDate, timer.dateKey, store.feelWeek);
+    const { items, added } = addActualMinutes(dayItems, timer.interestId, minutes);
+    setStore((prev) => ({
+      ...prev,
+      runningTimer: null,
+      actualByDate: { ...prev.actualByDate, [timer.dateKey]: items },
+    }));
+    if (added === 0) {
+      addToast(
+        "warning",
+        "В сутках только 24 часа",
+        "Этот день уже заполнен. Сессия не записалась.",
+      );
+    } else if (added < minutes) {
+      addToast(
+        "warning",
+        "Записана часть времени",
+        `Влезло только ${formatMinutes(added)} из ${formatMinutes(minutes)}.`,
+      );
+    }
+  }
+
+  function resetView() {
+    if (viewMode === "feel") {
+      setStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
+      return;
+    }
+    setStore((prev) => {
+      const next = { ...prev.actualByDate };
+      delete next[viewDateKey];
+      return { ...prev, actualByDate: next };
+    });
+  }
+
+  const usageTotal = viewMode === "feel" || !isMobile ? WEEK_MINUTES : DAY_MINUTES;
+  const usageUsed =
+    viewMode === "feel" ? usedMinutesFeel : isMobile ? usedMinutesActualDay : usedMinutesActualWeek;
+  const usageLabel = viewMode === "feel" || !isMobile ? "Неделя" : "Сегодня";
+  const usageCapLabel =
+    viewMode === "feel" || !isMobile ? `${WEEK_HOURS} ч` : `${DAY_HOURS} ч`;
 
   return (
     <div className="page">
       {introOpen ? (
-        <div className="modal-backdrop" onClick={() => setIntroOpen(false)}>
+        <div className="modal-backdrop" onClick={closeIntro}>
           <div
             className="modal"
             role="dialog"
@@ -282,21 +558,24 @@ export default function App() {
               <ol>
                 <li>
                   Заполните карту так, как <strong>вам кажется</strong> — как вы
-                  распределяете своё время.
+                  распределяете своё время. Можно пропустить.
                 </li>
-                <li>Сохраните.</li>
                 <li>
-                  В течение недели фиксируйте в действительности, сколько времени
-                  и на что ушло.
+                  Дальше каждый день засекайте сферы секундомером: сели —
+                  Старт, закончили — Стоп. Время пишется в сегодняшнюю дату.
                 </li>
-                <li>Отредактируйте карту по фактам.</li>
+                <li>К концу недели карта — это уже факт, не ощущение.</li>
               </ol>
               <p>
-                Разница между первой и второй версией — это и есть честная
-                картина вашего текущего результата.
+                Разница между первой версией и неделей с таймера — это и есть
+                честная картина.
               </p>
               <p>
                 <strong>Не занимайтесь самообманом.</strong>
+              </p>
+              <p>
+                Чтобы открывать с телефона как приложение: в Safari «Поделиться» →
+                «На экран Домой». Данные останутся в этом браузере.
               </p>
 
               <h2>Границы</h2>
@@ -366,7 +645,7 @@ export default function App() {
               </p>
             </div>
             <div className="modal-actions">
-              <button type="button" className="pill" onClick={() => setIntroOpen(false)}>
+              <button type="button" className="pill" onClick={closeIntro}>
                 Начать
               </button>
             </div>
@@ -374,9 +653,38 @@ export default function App() {
         </div>
       ) : null}
 
+      {viewMode === "feel" && !store.feelConfirmed ? (
+        <section className="feel-banner">
+          <p>
+            Заполните карту как чувствуете. Можно пропустить и сразу засекать
+            время.
+          </p>
+          <div className="feel-banner-actions">
+            <button type="button" className="pill ghost" onClick={confirmFeel}>
+              Пропустить
+            </button>
+            <button type="button" className="pill" onClick={confirmFeel}>
+              Дальше
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {viewMode === "fact" ? (
+        <TimerPanel
+          dateKey={todayKey}
+          spheres={timerSpheres}
+          runningId={running?.interestId ?? null}
+          runningLabel={runningItem?.name}
+          elapsed={running ? formatElapsed(now - running.startedAt) : "0:00"}
+          onStart={startTimer}
+          onStop={stopTimer}
+        />
+      ) : null}
+
       <section className="stats" aria-label="Часы недели">
         <Stat value={`${WEEK_HOURS} ч`} label="Всего в неделе" />
-        <Stat value={formatMinutes(usedMinutes)} label="Уже распределено" />
+        <Stat value={formatMinutes(weekUsedForStats)} label="Уже распределено" />
         <Stat
           value={formatMinutes(freeMinutes)}
           label="Ещё доступно"
@@ -396,37 +704,67 @@ export default function App() {
         ) : null}
       </section>
 
-      <UsageBar usedMinutes={usedMinutes} />
+      <UsageBar
+        usedMinutes={usageUsed}
+        totalMinutes={usageTotal}
+        label={usageLabel}
+        capLabel={usageCapLabel}
+      />
 
       <div className="layout">
         <section className="map-panel">
           <div className="map-head">
-            <h2>Карта баланса</h2>
+            <h2>{viewMode === "feel" ? "Как чувствую" : "Карта баланса"}</h2>
             <div className="day-tabs" role="tablist" aria-label="Дни недели">
-              {DAYS.map((day) => (
-                <button
-                  key={day.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={day.id === dayId}
-                  className={`day-tab${day.id === dayId ? " active" : ""}`}
-                  onClick={() => setDayId(day.id)}
-                >
-                  {day.short}
-                </button>
-              ))}
+              {viewMode === "feel"
+                ? DAYS.map((day) => (
+                    <button
+                      key={day.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={day.id === dayId}
+                      className={`day-tab${day.id === dayId ? " active" : ""}`}
+                      onClick={() => setPickedDayId(day.id)}
+                    >
+                      {day.short}
+                    </button>
+                  ))
+                : weekKeys.map((key, index) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={key === viewDateKey}
+                      className={`day-tab${key === viewDateKey ? " active" : ""}`}
+                      onClick={() => setPickedDateKey(key)}
+                    >
+                      {DAYS[index].short}
+                    </button>
+                  ))}
             </div>
-            <button
-              type="button"
-              className="pill"
-              onClick={() => setWeek(defaultWeek())}
-            >
-              Сброс
-            </button>
+            <div className="map-actions">
+              {store.feelConfirmed && !isMobile ? (
+                <button
+                  type="button"
+                  className="pill ghost"
+                  onClick={() => setMode(viewMode === "feel" ? "fact" : "feel")}
+                >
+                  {viewMode === "feel" ? "К факту" : "Как чувствую"}
+                </button>
+              ) : null}
+              <button type="button" className="pill" onClick={resetView}>
+                Сброс
+              </button>
+            </div>
           </div>
+          {viewMode === "fact" ? (
+            <p className="date-line">{formatDateTitle(viewDateKey)}</p>
+          ) : null}
           <div className="wheel-slot">
             <BalanceWheel
               interests={interests}
+              roomMinutes={dayRoom}
+              timerOnly={viewMode === "fact"}
               onBump={bump}
               onRename={renameInterest}
             />
@@ -470,8 +808,10 @@ export default function App() {
 
         <InterestEditor
           interests={interests}
+          roomMinutes={dayRoom}
           draft={draft}
           canAdd={canAdd}
+          timerOnly={viewMode === "fact"}
           onDraft={setDraft}
           onAdd={addInterest}
           onBump={bump}
@@ -481,7 +821,11 @@ export default function App() {
       </div>
 
       <section className="table-panel">
-        <h2>Таблица распределения времени по сферам</h2>
+        <h2>
+          {viewMode === "feel"
+            ? "Таблица распределения времени по сферам"
+            : "Факт за неделю"}
+        </h2>
         <InterestTable interests={weeklyInterests} />
       </section>
 
@@ -500,6 +844,74 @@ export default function App() {
         ))}
       </div>
     </div>
+  );
+}
+
+function TimerPanel({
+  dateKey,
+  spheres,
+  runningId,
+  runningLabel,
+  elapsed,
+  onStart,
+  onStop,
+}: {
+  dateKey: DateKey;
+  spheres: Interest[];
+  runningId: string | null;
+  runningLabel?: string;
+  elapsed: string;
+  onStart: (id: string) => void;
+  onStop: () => void;
+}) {
+  const fallbackId = spheres.find((item) => item.id === "work")?.id ?? spheres[0]?.id ?? "";
+  const [userPickedId, setUserPickedId] = useState(fallbackId);
+  const pickedId =
+    runningId ??
+    (spheres.some((item) => item.id === userPickedId) ? userPickedId : fallbackId);
+  const selected = spheres.find((item) => item.id === pickedId);
+
+  return (
+    <section className="timer" aria-label="Секундомер">
+      <p className="timer-date">{formatDateTitle(dateKey)}</p>
+      <p className="timer-time" aria-live="polite">
+        {elapsed}
+      </p>
+      {runningId && runningLabel ? (
+        <p className="timer-running">Идёт: {runningLabel}</p>
+      ) : (
+        <p className="timer-running">Выберите сферу и нажмите Старт</p>
+      )}
+      <div className="timer-spheres" role="group" aria-label="Сфера для таймера">
+        {spheres.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`timer-chip${item.id === pickedId ? " active" : ""}${item.id === runningId ? " running" : ""}`}
+            disabled={runningId != null && item.id !== runningId}
+            onClick={() => setUserPickedId(item.id)}
+          >
+            {item.name}
+          </button>
+        ))}
+      </div>
+      <div className="timer-actions">
+        {runningId ? (
+          <button type="button" className="pill timer-btn" onClick={onStop}>
+            Стоп
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="pill timer-btn"
+            disabled={!selected}
+            onClick={() => selected && onStart(selected.id)}
+          >
+            Старт
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -522,24 +934,30 @@ function Stat({
 
 function UsageBar({
   usedMinutes,
+  totalMinutes,
+  label,
+  capLabel,
 }: {
   usedMinutes: number;
+  totalMinutes: number;
+  label: string;
+  capLabel: string;
 }) {
-  const restMinutes = Math.max(0, WEEK_MINUTES - usedMinutes);
+  const restMinutes = Math.max(0, totalMinutes - usedMinutes);
   return (
     <div className="usage">
       <div className="usage-labels">
-        <span>Неделя</span>
+        <span>{label}</span>
         <span>
-          {formatMinutes(usedMinutes)} / {WEEK_HOURS} ч
+          {formatMinutes(usedMinutes)} / {capLabel}
         </span>
       </div>
       <div
         className="usage-track"
         role="meter"
-        aria-label="Распределённые часы недели"
+        aria-label="Распределённые часы"
         aria-valuemin={0}
-        aria-valuemax={WEEK_MINUTES}
+        aria-valuemax={totalMinutes}
         aria-valuenow={usedMinutes}
       >
         <span className="usage-fill" style={{ flexGrow: usedMinutes }} />
@@ -551,10 +969,14 @@ function UsageBar({
 
 function BalanceWheel({
   interests,
+  roomMinutes,
+  timerOnly,
   onBump,
   onRename,
 }: {
   interests: Interest[];
+  roomMinutes: number;
+  timerOnly: boolean;
   onBump: (id: string, dir: 1 | -1, source: "wheel" | "list") => void;
   onRename: (id: string, name: string) => void;
 }) {
@@ -652,8 +1074,11 @@ function BalanceWheel({
 
       {interests.map((item, index) => {
         const pos = polar(index, count, LABEL_R);
-        const plusOff = item.minutes >= MAX_MINUTES_PER_INTEREST;
-        const minusOff = item.minutes <= floorFor(item);
+        const plusOff =
+          item.minutes >= MAX_MINUTES_PER_INTEREST ||
+          roomMinutes < WHEEL_STEP_MINUTES;
+        const minusOff = item.minutes <= floorFor(item, timerOnly);
+        const hideBtns = timerOnly && !isSleepInterest(item);
         return (
           <div
             key={item.id}
@@ -665,30 +1090,36 @@ function BalanceWheel({
           >
             <SpokeName item={item} onRename={onRename} />
             <em>{formatMinutes(item.minutes)}</em>
-            <div className="spoke-btns">
-              <button
-                type="button"
-                className="icon-btn"
-                title={
-                  minusOff && (item.id === "sleep" || item.locked)
-                    ? "Сон нельзя снизить ниже 4 ч в сутки"
-                    : `Убавить: ${item.name}`
-                }
-                disabled={minusOff}
-                onClick={() => onBump(item.id, -1, "wheel")}
-              >
-                −
-              </button>
-              <button
-                type="button"
-                className="icon-btn"
-                title={`Добавить: ${item.name}`}
-                disabled={plusOff}
-                onClick={() => onBump(item.id, 1, "wheel")}
-              >
-                +
-              </button>
-            </div>
+            {hideBtns ? null : (
+              <div className="spoke-btns">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={
+                    minusOff && (item.id === "sleep" || item.locked) && !timerOnly
+                      ? "Сон нельзя снизить ниже 4 ч в сутки"
+                      : `Убавить: ${item.name}`
+                  }
+                  disabled={minusOff}
+                  onClick={() => onBump(item.id, -1, "wheel")}
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={
+                    plusOff && roomMinutes < WHEEL_STEP_MINUTES
+                      ? "В сутках только 24 часа"
+                      : `Добавить: ${item.name}`
+                  }
+                  disabled={plusOff}
+                  onClick={() => onBump(item.id, 1, "wheel")}
+                >
+                  +
+                </button>
+              </div>
+            )}
           </div>
         );
       })}
@@ -786,8 +1217,10 @@ function SpokeName({
 
 function InterestEditor({
   interests,
+  roomMinutes,
   draft,
   canAdd,
+  timerOnly,
   onDraft,
   onAdd,
   onBump,
@@ -795,8 +1228,10 @@ function InterestEditor({
   onRename,
 }: {
   interests: Interest[];
+  roomMinutes: number;
   draft: string;
   canAdd: boolean;
+  timerOnly: boolean;
   onDraft: (value: string) => void;
   onAdd: () => void;
   onBump: (id: string, dir: 1 | -1, source: "wheel" | "list") => void;
@@ -854,84 +1289,101 @@ function InterestEditor({
         </button>
       </form>
       <ul className="interest-list">
-        {interests.map((item) => (
-          <li key={item.id}>
-            <div className="interest-name">
-              {item.locked ? (
-                <strong>{item.name}</strong>
-              ) : editingId === item.id ? (
-                <input
-                  className="name-input"
-                  value={editName}
-                  autoFocus
-                  aria-label={`Переименовать: ${item.name}`}
-                  onChange={(event) => setEditName(event.target.value)}
-                  onBlur={() => commitRename(item.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      commitRename(item.id);
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      setEditingId(null);
-                    }
-                  }}
-                />
-              ) : (
+        {interests.map((item) => {
+          const sleepItem = isSleepInterest(item);
+          const manualOff = timerOnly && !sleepItem;
+          return (
+            <li key={item.id}>
+              <div className="interest-name">
+                {item.locked ? (
+                  <strong>{item.name}</strong>
+                ) : editingId === item.id ? (
+                  <input
+                    className="name-input"
+                    value={editName}
+                    autoFocus
+                    aria-label={`Переименовать: ${item.name}`}
+                    onChange={(event) => setEditName(event.target.value)}
+                    onBlur={() => commitRename(item.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        commitRename(item.id);
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setEditingId(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="name-btn"
+                    title="Переименовать"
+                    onClick={() => {
+                      setEditingId(item.id);
+                      setEditName(item.name);
+                    }}
+                  >
+                    {item.name}
+                  </button>
+                )}
+                {item.locked ? null : (
+                  <button
+                    type="button"
+                    className="text-btn"
+                    title={`Удалить: ${item.name}`}
+                    onClick={() => onRemove(item.id)}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <div className="interest-row">
                 <button
                   type="button"
-                  className="name-btn"
-                  title="Переименовать"
-                  onClick={() => {
-                    setEditingId(item.id);
-                    setEditName(item.name);
-                  }}
+                  className="icon-btn"
+                  title={
+                    manualOff
+                      ? "Засеките время таймером"
+                      : item.minutes <= floorFor(item, timerOnly) &&
+                          (item.id === "sleep" || item.locked)
+                        ? "Сон нельзя снизить ниже 4 ч в сутки"
+                        : "Убавить: 10 мин."
+                  }
+                  disabled={manualOff || item.minutes <= floorFor(item, timerOnly)}
+                  onClick={() => onBump(item.id, -1, "list")}
                 >
-                  {item.name}
+                  −
                 </button>
-              )}
-              {item.locked ? null : (
+                <span>
+                  уровень {levelValue(item.minutes)} / {RING_COUNT}
+                </span>
                 <button
                   type="button"
-                  className="text-btn"
-                  title={`Удалить: ${item.name}`}
-                  onClick={() => onRemove(item.id)}
+                  className="icon-btn"
+                  title={
+                    manualOff
+                      ? "Засеките время таймером"
+                      : roomMinutes < LIST_STEP_DAILY_MINUTES
+                        ? "В сутках только 24 часа"
+                        : "Добавить: 10 мин."
+                  }
+                  disabled={
+                    manualOff ||
+                    item.minutes >= MAX_MINUTES_PER_INTEREST ||
+                    roomMinutes < LIST_STEP_DAILY_MINUTES
+                  }
+                  onClick={() => onBump(item.id, 1, "list")}
                 >
-                  ×
+                  +
                 </button>
-              )}
-            </div>
-            <div className="interest-row">
-              <button
-                type="button"
-                className="icon-btn"
-                title={
-                  item.minutes <= floorFor(item) && (item.id === "sleep" || item.locked)
-                    ? "Сон нельзя снизить ниже 4 ч в сутки"
-                    : "Убавить: 10 мин."
-                }
-                disabled={item.minutes <= floorFor(item)}
-                onClick={() => onBump(item.id, -1, "list")}
-              >
-                −
-              </button>
-              <span>
-                уровень {levelValue(item.minutes)} / {RING_COUNT}
-              </span>
-              <button
-                type="button"
-                className="icon-btn"
-                title="Добавить: 10 мин."
-                disabled={item.minutes >= MAX_MINUTES_PER_INTEREST}
-                onClick={() => onBump(item.id, 1, "list")}
-              >
-                +
-              </button>
-              <em>{formatMinutes(item.minutes)}</em>
-            </div>
-          </li>
-        ))}
+                <em>{formatMinutes(item.minutes)}</em>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </aside>
   );

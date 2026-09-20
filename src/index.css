@@ -36,10 +36,121 @@ h3 {
 .page {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 32px 20px 64px;
+  padding: 32px 20px calc(64px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.feel-banner,
+.timer {
+  padding: 16px;
+  border: 1px solid #d9d2c8;
+  border-radius: 12px;
+  background: #fffcf7;
+}
+
+.feel-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.feel-banner p {
+  margin: 0;
+  flex: 1 1 240px;
+  color: #6b6560;
+  font-size: 15px;
+  line-height: 1.45;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.feel-banner-actions,
+.map-actions,
+.timer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pill.ghost {
+  background: transparent;
+  color: #1c1a17;
+}
+
+.timer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.timer-date,
+.timer-running,
+.date-line {
+  margin: 0;
+  color: #6b6560;
+  font-size: 14px;
+  text-align: center;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.date-line {
+  margin-top: -4px;
+}
+
+.timer-time {
+  margin: 0;
+  font-size: 52px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.timer-spheres {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.timer-chip {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #d9d2c8;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b6560;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.timer-chip.active {
+  background: #1c1a17;
+  color: #fffcf7;
+  border-color: #1c1a17;
+}
+
+.timer-chip.running {
+  outline: 2px solid #2a9a6a;
+  outline-offset: 1px;
+}
+
+.timer-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.timer-btn {
+  height: 44px;
+  min-width: 120px;
+  padding: 0 24px;
+  font-size: 16px;
 }
 
 .legend-lead,
@@ -737,5 +848,58 @@ tbody td:first-child {
 
   .hero h1 {
     font-size: 28px;
+  }
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 16px 12px calc(28px + env(safe-area-inset-bottom));
+    gap: 16px;
+  }
+
+  .stats,
+  .day-tabs {
+    display: none;
+  }
+
+  .map-head {
+    justify-content: space-between;
+  }
+
+  .timer-time {
+    font-size: 56px;
+  }
+
+  .timer-chip {
+    height: 36px;
+    padding: 0 14px;
+  }
+
+  .spoke {
+    min-width: 64px;
+    max-width: 92px;
+  }
+
+  .spoke strong {
+    font-size: 11px;
+  }
+
+  .spoke em {
+    font-size: 11px;
+  }
+
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .modal-backdrop {
+    padding: 12px;
+  }
+
+  .modal-body,
+  .modal-actions {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 }

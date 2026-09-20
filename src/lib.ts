@@ -58,18 +58,18 @@ export type DayId = (typeof DAYS)[number]["id"];
 export type WeekPlan = Record<DayId, Interest[]>;
 
 const SPHERE_DEFS: Array<{ id: string; name: string; locked: boolean }> = [
-  { id: "sleep", name: "Сон и восстановление", locked: true },
-  { id: "work", name: "Работа и карьера", locked: false },
+  { id: "sleep", name: "Сон", locked: true },
+  { id: "work", name: "Работа", locked: false },
   { id: "family", name: "Семья", locked: false },
-  { id: "sport", name: "Здоровье и спорт", locked: false },
-  { id: "fun", name: "Развлечения и друзья", locked: false },
-  { id: "education", name: "Образование и саморазвитие", locked: false },
+  { id: "sport", name: "Здоровье", locked: false },
+  { id: "fun", name: "Развлечения", locked: false },
+  { id: "education", name: "Образование", locked: false },
   { id: "relations", name: "Отношения", locked: false },
-  { id: "craft", name: "Хобби и увлечения", locked: false },
-  { id: "home", name: "Быт и уклад жизни", locked: false },
-  { id: "money", name: "Финансы и благосостояние", locked: false },
-  { id: "mentality", name: "Ментальность и рефлексия", locked: false },
-  { id: "rest", name: "Отдых и путешествия", locked: false },
+  { id: "craft", name: "Увлечения", locked: false },
+  { id: "home", name: "Быт", locked: false },
+  { id: "money", name: "Финансы", locked: false },
+  { id: "mentality", name: "Рефлексия", locked: false },
+  { id: "rest", name: "Фрустрация", locked: false },
 ];
 
 function hours(value: number): number {
@@ -102,9 +102,120 @@ export function defaultWeek(): WeekPlan {
   };
 }
 
-export function todayDayId(): DayId {
+export type DateKey = string;
+
+export type RunningTimer = {
+  interestId: string;
+  startedAt: number;
+  dateKey: DateKey;
+};
+
+export type AppPersist = {
+  feelWeek: WeekPlan;
+  actualByDate: Record<DateKey, Interest[]>;
+  runningTimer: RunningTimer | null;
+  feelConfirmed: boolean;
+  introSeen: boolean;
+};
+
+export function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+export function toDateKey(date: Date): DateKey {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+export function todayDateKey(): DateKey {
+  return toDateKey(new Date());
+}
+
+export function parseDateKey(dateKey: DateKey): Date {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+export function dayIdFromDate(date: Date): DayId {
   const order: DayId[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-  return order[new Date().getDay()];
+  return order[date.getDay()];
+}
+
+export function todayDayId(): DayId {
+  return dayIdFromDate(new Date());
+}
+
+export function dateKeyToDayId(dateKey: DateKey): DayId {
+  return dayIdFromDate(parseDateKey(dateKey));
+}
+
+export function weekDateKeys(anchor = new Date()): DateKey[] {
+  const day = anchor.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + mondayOffset);
+  return Array.from({ length: 7 }, (_, index) => {
+    const next = new Date(monday);
+    next.setDate(monday.getDate() + index);
+    return toDateKey(next);
+  });
+}
+
+export function formatDateTitle(dateKey: DateKey): string {
+  const text = parseDateKey(dateKey).toLocaleDateString("ru-RU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+export function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
+  return `${minutes}:${pad2(seconds)}`;
+}
+
+export function elapsedMinutes(startedAt: number, endedAt = Date.now()): number {
+  return Math.floor(Math.max(0, endedAt - startedAt) / 60_000);
+}
+
+export function isSleepInterest(item: Interest): boolean {
+  return item.id === "sleep" || item.locked;
+}
+
+export function emptyActualDay(template: Interest[]): Interest[] {
+  return template.map((item) => ({ ...item, minutes: 0 }));
+}
+
+export function actualDayFor(
+  actualByDate: Record<DateKey, Interest[]>,
+  dateKey: DateKey,
+  feelWeek: WeekPlan,
+): Interest[] {
+  const existing = actualByDate[dateKey];
+  if (existing?.length) return existing;
+  const template = feelWeek[dateKeyToDayId(dateKey)] ?? feelWeek.mon;
+  return emptyActualDay(template);
+}
+
+export function addActualMinutes(
+  items: Interest[],
+  interestId: string,
+  addMinutes: number,
+): { items: Interest[]; added: number } {
+  if (addMinutes <= 0) return { items, added: 0 };
+  const current = items.find((item) => item.id === interestId);
+  if (!current) return { items, added: 0 };
+  const roomDay = Math.max(0, DAY_MINUTES - dayUsedMinutes(items));
+  const roomItem = Math.max(0, MAX_MINUTES_PER_INTEREST - current.minutes);
+  const added = Math.min(addMinutes, roomDay, roomItem);
+  if (added <= 0) return { items, added: 0 };
+  const next = items.map((item) =>
+    item.id === interestId ? { ...item, minutes: item.minutes + added } : item,
+  );
+  return { items: clampDayMinutes(next), added };
 }
 
 export function formatMinutes(mins: number): string {
@@ -121,7 +232,8 @@ export function dailyMinutes(weekly: number): number {
   return Math.round(raw / LIST_STEP_DAILY_MINUTES) * LIST_STEP_DAILY_MINUTES;
 }
 
-export function floorFor(item: Interest): number {
+export function floorFor(item: Interest, actual = false): number {
+  if (actual) return 0;
   return item.id === "sleep" || item.locked ? SLEEP_MIN_MINUTES : 0;
 }
 
@@ -167,18 +279,45 @@ export function nextListMinutes(
   return next === current ? null : next;
 }
 
+export function dayUsedMinutes(items: Interest[]): number {
+  return items.reduce((sum, item) => sum + item.minutes, 0);
+}
+
+export function clampDayMinutes(items: Interest[]): Interest[] {
+  let overflow = dayUsedMinutes(items) - DAY_MINUTES;
+  if (overflow <= 0) return items;
+  return items.map((item) => {
+    if (overflow <= 0) return item;
+    const reducible = Math.max(0, item.minutes - floorFor(item));
+    const cut = Math.min(reducible, overflow);
+    overflow -= cut;
+    return cut === 0 ? item : { ...item, minutes: item.minutes - cut };
+  });
+}
+
 export function weekUsedMinutes(week: WeekPlan): number {
   return DAYS.reduce(
-    (sum, day) =>
-      sum + week[day.id].reduce((daySum, item) => daySum + item.minutes, 0),
+    (sum, day) => sum + dayUsedMinutes(week[day.id]),
     0,
   );
 }
 
-export function aggregateWeek(week: WeekPlan): Interest[] {
+function sortInterests(items: Interest[]): Interest[] {
+  const order = SPHERE_DEFS.map((item) => item.id);
+  return [...items].sort((a, b) => {
+    const ia = order.indexOf(a.id);
+    const ib = order.indexOf(b.id);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.name.localeCompare(b.name, "ru");
+  });
+}
+
+export function mergeInterestLists(lists: Interest[][]): Interest[] {
   const map = new Map<string, Interest>();
-  for (const day of DAYS) {
-    for (const item of week[day.id]) {
+  for (const items of lists) {
+    for (const item of items) {
       const prev = map.get(item.id);
       if (!prev) {
         map.set(item.id, { ...item });
@@ -191,15 +330,47 @@ export function aggregateWeek(week: WeekPlan): Interest[] {
       }
     }
   }
-  const order = SPHERE_DEFS.map((item) => item.id);
-  return [...map.values()].sort((a, b) => {
-    const ia = order.indexOf(a.id);
-    const ib = order.indexOf(b.id);
-    if (ia >= 0 && ib >= 0) return ia - ib;
-    if (ia >= 0) return -1;
-    if (ib >= 0) return 1;
-    return a.name.localeCompare(b.name, "ru");
-  });
+  return sortInterests([...map.values()]);
+}
+
+export function aggregateWeek(week: WeekPlan): Interest[] {
+  return mergeInterestLists(DAYS.map((day) => week[day.id]));
+}
+
+export function sanitizeWeek(week: WeekPlan): WeekPlan {
+  return Object.fromEntries(
+    DAYS.map((day) => [
+      day.id,
+      clampDayMinutes(week[day.id].map((item) => migrateInterest(item))),
+    ]),
+  ) as WeekPlan;
+}
+
+export function isRunningTimer(value: unknown): value is RunningTimer {
+  if (!value || typeof value !== "object") return false;
+  const timer = value as Record<string, unknown>;
+  return (
+    typeof timer.interestId === "string" &&
+    typeof timer.startedAt === "number" &&
+    typeof timer.dateKey === "string"
+  );
+}
+
+export function isActualByDate(value: unknown): value is Record<DateKey, Interest[]> {
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value as Record<string, unknown>).every((items) => isInterestArray(items));
+}
+
+export function isAppPersist(value: unknown): value is AppPersist {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    isWeekPlan(record.feelWeek) &&
+    isActualByDate(record.actualByDate) &&
+    (record.runningTimer == null || isRunningTimer(record.runningTimer)) &&
+    typeof record.feelConfirmed === "boolean" &&
+    typeof record.introSeen === "boolean"
+  );
 }
 
 export function polar(index: number, count: number, radius: number) {
@@ -291,20 +462,25 @@ export function usageTone(interest: Interest): "red" | "orange" | "yellow" | "gr
 }
 
 const NAME_MIGRATIONS: Record<string, string> = {
-  Сон: "Сон и восстановление",
-  Работа: "Работа и карьера",
-  Творчество: "Хобби и увлечения",
-  Хобби: "Хобби и увлечения",
-  Спорт: "Здоровье и спорт",
-  Развлечения: "Развлечения и друзья",
-  "Развлечения и отдых": "Развлечения и друзья",
-  "Развлечения и путешествия": "Развлечения и друзья",
-  Отдых: "Отдых и путешествия",
-  "Отдых и друзья": "Отдых и путешествия",
-  Образование: "Образование и саморазвитие",
-  Финансы: "Финансы и благосостояние",
-  Быт: "Быт и уклад жизни",
-  Ментальность: "Ментальность и рефлексия",
+  "Сон и восстановление": "Сон",
+  "Работа и карьера": "Работа",
+  "Здоровье и спорт": "Здоровье",
+  Спорт: "Здоровье",
+  "Развлечения и друзья": "Развлечения",
+  "Развлечения и отдых": "Развлечения",
+  "Развлечения и путешествия": "Развлечения",
+  "Образование и саморазвитие": "Образование",
+  "Хобби и увлечения": "Увлечения",
+  Хобби: "Увлечения",
+  Творчество: "Увлечения",
+  "Быт и уклад жизни": "Быт",
+  "Финансы и благосостояние": "Финансы",
+  "Ментальность и рефлексия": "Рефлексия",
+  Ментальность: "Рефлексия",
+  Духовность: "Рефлексия",
+  "Отдых и путешествия": "Фрустрация",
+  "Отдых и друзья": "Фрустрация",
+  Отдых: "Фрустрация",
 };
 
 export function migrateInterest(item: {
@@ -325,7 +501,7 @@ export function migrateInterest(item: {
   let name = item.name;
   if (id === "spirit" || name === "Духовность") {
     id = "mentality";
-    name = "Ментальность и рефлексия";
+    name = "Рефлексия";
   }
   if (NAME_MIGRATIONS[name]) name = NAME_MIGRATIONS[name];
   return { id, name, locked: item.locked, minutes };
