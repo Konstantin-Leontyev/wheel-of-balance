@@ -1053,7 +1053,7 @@ export default function App() {
         <nav className="tabbar" aria-label="Разделы">
           <TabButton
             id="map"
-            label="Колесо"
+            label="Баланс"
             active={mobileTab === "map"}
             onClick={() => setMobileTab("map")}
           />
@@ -1548,7 +1548,7 @@ function BalanceWheel({
         return (
           <div
             key={item.id}
-            className="spoke"
+            className={`spoke${isSleepInterest(item) ? " spoke-sleep" : ""}`}
             style={{
               left: `${(pos.x / VIEW) * 100}%`,
               top: `${(pos.y / VIEW) * 100}%`,

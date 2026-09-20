@@ -1162,7 +1162,7 @@ tbody td:first-child {
   .page.page-fit .timer-below {
     justify-content: flex-start;
     min-height: 0;
-    padding-top: 20px;
+    padding-top: 120px;
   }
 
   .page.page-fit .timer-actions {
@@ -1289,7 +1289,9 @@ tbody td:first-child {
   .table-panel,
   .map-head,
   .date-line,
-  .timer-date {
+  .timer-date,
+  .wheel-step,
+  .spoke-sleep .spoke-btns {
     display: none;
   }
 
