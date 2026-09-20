@@ -28,22 +28,25 @@ import {
   dateKeyToDayId,
   dayUsedMinutes,
   defaultWeek,
-  elapsedMinutes,
   floorFor,
   formatDateTitle,
   formatElapsed,
+  formatMonthTitle,
   formatMinutes,
   isSleepInterest,
   isWeekPlan,
   mergeInterestLists,
+  monthCells,
   nextListMinutes,
   nextWheelMinutes,
+  normalizeRunningTimer,
   parseBackup,
   palette,
   parseDateKey,
   polar,
   levelValue,
   sanitizeWeek,
+  timerElapsedMs,
   todayDateKey,
   todayDayId,
   toneForInterest,
@@ -88,6 +91,7 @@ function loadStore(): AppPersist {
           actualByDate: {},
           runningTimer: null,
           feelConfirmed: true,
+          feelSkipped: false,
           introSeen: false,
         };
       }
@@ -100,6 +104,7 @@ function loadStore(): AppPersist {
     actualByDate: {},
     runningTimer: null,
     feelConfirmed: false,
+    feelSkipped: false,
     introSeen: false,
   };
 }
@@ -141,14 +146,22 @@ export default function App() {
   );
   const [draft, setDraft] = useState("");
   const [seq, setSeq] = useState(20);
-  const [introOpen, setIntroOpen] = useState(!store.introSeen);
+  const [introOpen, setIntroOpen] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"map" | "timer" | "calendar" | "export" | "import">(
+    "timer",
+  );
+  const [calCursor, setCalCursor] = useState(() => {
+    const date = parseDateKey(todayDateKey());
+    return { year: date.getFullYear(), month: date.getMonth() };
+  });
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const toastSeq = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const isMobile = useMediaQuery("(max-width: 720px)");
   const todayKey = useTodayKey();
-  const viewMode = store.feelConfirmed ? mode : "feel";
+  const viewMode =
+    !store.feelConfirmed ? "feel" : store.feelSkipped ? "fact" : mode;
   const dayId = isMobile ? dateKeyToDayId(todayKey) : pickedDayId;
   const viewDateKey = isMobile ? todayKey : pickedDateKey;
   const weekKeys = useMemo(() => weekDateKeys(parseDateKey(todayKey)), [todayKey]);
@@ -222,7 +235,12 @@ export default function App() {
   }
 
   function confirmFeel() {
-    setStore((prev) => ({ ...prev, feelConfirmed: true }));
+    setStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: false }));
+    setMode("fact");
+  }
+
+  function skipFeel() {
+    setStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: true }));
     setMode("fact");
   }
 
@@ -256,11 +274,13 @@ export default function App() {
   const timerSpheres = actualDayFor(store.actualByDate, todayKey, store.feelWeek).filter(
     (item) => !isSleepInterest(item),
   );
-  const running = store.runningTimer;
+  const running = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
   const runningItem = running
     ? timerSpheres.find((item) => item.id === running.interestId) ??
       interests.find((item) => item.id === running.interestId)
     : undefined;
+  const timerLive = running ? timerElapsedMs(running, now) : 0;
+  const timerPaused = running != null && running.runningSince == null;
 
   function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
     if (viewMode === "fact") {
@@ -420,24 +440,49 @@ export default function App() {
   }
 
   function startTimer(interestId: string) {
-    if (store.runningTimer) {
-      addToast("warning", "Таймер уже идёт", "Сначала остановите текущую сферу.");
+    const current = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
+    if (current?.runningSince != null) {
+      addToast("warning", "Таймер уже идёт", "Поставьте на паузу, если нужно сменить сферу.");
+      return;
+    }
+    if (current && current.runningSince == null) {
+      setStore((prev) => ({
+        ...prev,
+        runningTimer: {
+          ...normalizeRunningTimer(prev.runningTimer ?? current),
+          runningSince: Date.now(),
+        },
+      }));
       return;
     }
     setStore((prev) => ({
       ...prev,
       runningTimer: {
         interestId,
-        startedAt: Date.now(),
         dateKey: todayKey,
+        accumulatedMs: 0,
+        runningSince: Date.now(),
+      },
+    }));
+  }
+
+  function pauseTimer() {
+    const current = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
+    if (!current || current.runningSince == null) return;
+    setStore((prev) => ({
+      ...prev,
+      runningTimer: {
+        ...current,
+        accumulatedMs: timerElapsedMs(current),
+        runningSince: null,
       },
     }));
   }
 
   function stopTimer() {
-    const timer = store.runningTimer;
+    const timer = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
     if (!timer) return;
-    const minutes = elapsedMinutes(timer.startedAt, Date.now());
+    const minutes = Math.floor(timerElapsedMs(timer) / 60_000);
     if (minutes < 1) {
       setStore((prev) => ({ ...prev, runningTimer: null }));
       addToast(
@@ -539,6 +584,29 @@ export default function App() {
 
   return (
     <div className="page">
+      <header className="mobile-toolbar">
+        <div className="mobile-toolbar-text">
+          <strong>Карта баланса</strong>
+          <span>
+            {!store.feelConfirmed
+              ? "Сферы интересов"
+              : mobileTab === "timer"
+                ? "Секундомер"
+                : mobileTab === "calendar"
+                  ? "Календарь"
+                  : mobileTab === "export"
+                    ? "Выгрузка"
+                    : mobileTab === "import"
+                      ? "Загрузка"
+                      : formatDateTitle(viewDateKey)}
+          </span>
+        </div>
+        {store.feelConfirmed && (mobileTab === "map" || mobileTab === "timer") ? (
+          <button type="button" className="pill" onClick={resetView}>
+            Сброс
+          </button>
+        ) : null}
+      </header>
       {introOpen ? (
         <div className="modal-backdrop" onClick={closeIntro}>
           <div
@@ -697,11 +765,11 @@ export default function App() {
       {viewMode === "feel" && !store.feelConfirmed ? (
         <section className="feel-banner">
           <p>
-            Заполните карту как чувствуете. Можно пропустить и сразу засекать
-            время.
+            Настройте сферы — это приоритеты, без часов. Время появится завтра
+            с таймера. Можно пропустить.
           </p>
           <div className="feel-banner-actions">
-            <button type="button" className="pill ghost" onClick={confirmFeel}>
+            <button type="button" className="pill ghost" onClick={skipFeel}>
               Пропустить
             </button>
             <button type="button" className="pill" onClick={confirmFeel}>
@@ -711,37 +779,62 @@ export default function App() {
         </section>
       ) : null}
 
-      {viewMode === "fact" ? (
+      {viewMode === "feel" && !store.feelConfirmed ? (
+        <InterestEditor
+          interests={interests}
+          roomMinutes={dayRoom}
+          draft={draft}
+          canAdd={canAdd}
+          timerOnly={false}
+          hideTime
+          onDraft={setDraft}
+          onAdd={addInterest}
+          onBump={bump}
+          onRemove={removeInterest}
+          onRename={renameInterest}
+        />
+      ) : null}
+
+      {store.feelConfirmed ? (
         <TimerPanel
+          className={mobileTab !== "timer" ? "tab-hidden" : undefined}
           dateKey={todayKey}
           spheres={timerSpheres}
           runningId={running?.interestId ?? null}
           runningLabel={runningItem?.name}
-          elapsed={running ? formatElapsed(now - running.startedAt) : "0:00"}
+          elapsed={formatElapsed(timerLive)}
+          paused={timerPaused}
           onStart={startTimer}
+          onPause={pauseTimer}
           onStop={stopTimer}
         />
       ) : null}
 
-      <section className="backup">
+      <section
+        className={`backup${mobileTab !== "export" && mobileTab !== "import" ? " tab-hidden" : ""}`}
+      >
         <div>
-          <strong>Запасная копия</strong>
+          <strong>{mobileTab === "import" ? "Загрузка" : "Выгрузка"}</strong>
           <p>
             Обновление сайта само сейв не сотрёт. Файл нужен, если почистите
             браузер или смените телефон.
           </p>
         </div>
         <div className="backup-actions">
-          <button type="button" className="pill ghost" onClick={() => void saveBackup()}>
-            Скачать файл
-          </button>
-          <button
-            type="button"
-            className="pill"
-            onClick={() => fileInput.current?.click()}
-          >
-            Загрузить
-          </button>
+          {mobileTab !== "import" ? (
+            <button type="button" className="pill ghost" onClick={() => void saveBackup()}>
+              Скачать файл
+            </button>
+          ) : null}
+          {mobileTab !== "export" ? (
+            <button
+              type="button"
+              className="pill"
+              onClick={() => fileInput.current?.click()}
+            >
+              Загрузить
+            </button>
+          ) : null}
           <input
             ref={fileInput}
             type="file"
@@ -764,143 +857,140 @@ export default function App() {
         </div>
       </section>
 
-      <section className="stats" aria-label="Часы недели">
-        <Stat value={`${WEEK_HOURS} ч`} label="Всего в неделе" />
-        <Stat value={formatMinutes(weekUsedForStats)} label="Уже распределено" />
-        <Stat
-          value={formatMinutes(freeMinutes)}
-          label="Ещё доступно"
-          tone={freeMinutes === 0 ? "warning" : undefined}
+      <section
+        className={`calendar-panel${mobileTab !== "calendar" ? " tab-hidden" : ""}`}
+      >
+        <CalendarMonth
+          year={calCursor.year}
+          month={calCursor.month}
+          selected={viewDateKey}
+          today={todayKey}
+          marked={Object.keys(store.actualByDate)}
+          onPrev={() =>
+            setCalCursor((prev) =>
+              prev.month === 0
+                ? { year: prev.year - 1, month: 11 }
+                : { year: prev.year, month: prev.month - 1 },
+            )
+          }
+          onNext={() =>
+            setCalCursor((prev) =>
+              prev.month === 11
+                ? { year: prev.year + 1, month: 0 }
+                : { year: prev.year, month: prev.month + 1 },
+            )
+          }
+          onSelect={(key) => {
+            setPickedDateKey(key);
+            setPickedDayId(dateKeyToDayId(key));
+            setMobileTab("map");
+          }}
         />
-        <Stat
-          value={formatMinutes(sleep.minutes)}
-          label="Сон в сутки"
-          tone={sleepLow ? "danger" : sleepHigh ? "warning" : "success"}
-        />
-        {work ? (
-          <Stat
-            value={formatMinutes(work.minutes)}
-            label="Работа в сутки"
-            tone={workHigh ? "danger" : work.minutes >= WORK_NORM_MINUTES ? "success" : undefined}
-          />
-        ) : null}
       </section>
 
-      <UsageBar
-        usedMinutes={usageUsed}
-        totalMinutes={usageTotal}
-        label={usageLabel}
-        capLabel={usageCapLabel}
-      />
-
-      <div className="layout">
-        <section className="map-panel">
-          <div className="map-head">
-            <h2>{viewMode === "feel" ? "Как чувствую" : "Карта баланса"}</h2>
-            <div className="day-tabs" role="tablist" aria-label="Дни недели">
-              {viewMode === "feel"
-                ? DAYS.map((day) => (
-                    <button
-                      key={day.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={day.id === dayId}
-                      className={`day-tab${day.id === dayId ? " active" : ""}`}
-                      onClick={() => setPickedDayId(day.id)}
-                    >
-                      {day.short}
-                    </button>
-                  ))
-                : weekKeys.map((key, index) => (
-                    <button
-                      key={key}
-                      type="button"
-                      role="tab"
-                      aria-selected={key === viewDateKey}
-                      className={`day-tab${key === viewDateKey ? " active" : ""}`}
-                      onClick={() => setPickedDateKey(key)}
-                    >
-                      {DAYS[index].short}
-                    </button>
-                  ))}
-            </div>
-            <div className="map-actions">
-              {store.feelConfirmed && !isMobile ? (
-                <button
-                  type="button"
-                  className="pill ghost"
-                  onClick={() => setMode(viewMode === "feel" ? "fact" : "feel")}
-                >
-                  {viewMode === "feel" ? "К факту" : "Как чувствую"}
-                </button>
-              ) : null}
-              <button type="button" className="pill" onClick={resetView}>
-                Сброс
-              </button>
-            </div>
-          </div>
-          {viewMode === "fact" ? (
-            <p className="date-line">{formatDateTitle(viewDateKey)}</p>
-          ) : null}
-          <div className="wheel-slot">
-            <BalanceWheel
-              interests={interests}
-              roomMinutes={dayRoom}
-              timerOnly={viewMode === "fact"}
-              onBump={bump}
-              onRename={renameInterest}
+      {store.feelConfirmed ? (
+        <section className={`stats${mobileTab !== "map" ? " tab-hidden" : ""}`} aria-label="Часы недели">
+          <Stat value={`${WEEK_HOURS} ч`} label="Всего в неделе" />
+          <Stat value={formatMinutes(weekUsedForStats)} label="Уже распределено" />
+          <Stat
+            value={formatMinutes(freeMinutes)}
+            label="Ещё доступно"
+            tone={freeMinutes === 0 ? "warning" : undefined}
+          />
+          <Stat
+            value={formatMinutes(sleep.minutes)}
+            label="Сон в сутки"
+            tone={sleepLow ? "danger" : sleepHigh ? "warning" : "success"}
+          />
+          {work ? (
+            <Stat
+              value={formatMinutes(work.minutes)}
+              label="Работа в сутки"
+              tone={workHigh ? "danger" : work.minutes >= WORK_NORM_MINUTES ? "success" : undefined}
             />
-          </div>
-          <div className="legend-block">
-            <p className="legend-lead">
-              Сетка: 10 уровней от центра (0 ч) к внешней окружности (максимум
-              времени).
-            </p>
-            <div className="legend">
-              <span>
-                <i className="swatch" style={{ background: palette.red }} />
-                0 уровень — недосып / фрустрация
-              </span>
-              <span>
-                <i className="swatch" style={{ background: palette.green }} />
-                5 уровень — норма
-              </span>
-              <span>
-                <i className="swatch" style={{ background: palette.red }} />
-                10 уровень — пересып / переработка
-              </span>
-            </div>
-            <p className="legend-note">
-              От 5-го уровня шкала снова краснеет: избыток сна ведёт к
-              недомоганию. Переработка ведёт к выгоранию и потере
-              производительности.
-            </p>
-            <p className="legend-note">
-              И так в любой сфере: нельзя решить проблему, просто посвятив ей
-              всё время.
-            </p>
-            <p className="legend-note">
-              Следует руководствоваться принципом разумной достаточности:
-              результат растёт, пока соблюдается баланс пропорции «эффективность
-              / время», пока польза от добавленного времени всё ещё больше потерь
-              от утраты эффективности.
-            </p>
-          </div>
+          ) : null}
         </section>
+      ) : null}
 
-        <InterestEditor
-          interests={interests}
-          roomMinutes={dayRoom}
-          draft={draft}
-          canAdd={canAdd}
-          timerOnly={viewMode === "fact"}
-          onDraft={setDraft}
-          onAdd={addInterest}
-          onBump={bump}
-          onRemove={removeInterest}
-          onRename={renameInterest}
-        />
-      </div>
+      {store.feelConfirmed ? (
+        <div className={mobileTab !== "map" ? "tab-hidden" : undefined}>
+          <UsageBar
+            usedMinutes={usageUsed}
+            totalMinutes={usageTotal}
+            label={usageLabel}
+            capLabel={usageCapLabel}
+          />
+        </div>
+      ) : null}
+
+      {store.feelConfirmed ? (
+        <div className={`layout${mobileTab !== "map" ? " tab-hidden" : ""}`}>
+          <section className="map-panel">
+            <div className="map-head">
+              <h2>Карта дня</h2>
+              <div className="map-actions">
+                {store.feelConfirmed && !store.feelSkipped && !isMobile ? (
+                  <button
+                    type="button"
+                    className="pill ghost"
+                    onClick={() => setMode(viewMode === "feel" ? "fact" : "feel")}
+                  >
+                    {viewMode === "feel" ? "К факту" : "Как чувствую"}
+                  </button>
+                ) : null}
+                <button type="button" className="pill" onClick={resetView}>
+                  Сброс
+                </button>
+              </div>
+            </div>
+            <p className="date-line">{formatDateTitle(viewDateKey)}</p>
+            <div className="wheel-slot">
+              <BalanceWheel
+                interests={interests}
+                roomMinutes={dayRoom}
+                timerOnly={viewMode === "fact"}
+                onBump={bump}
+                onRename={renameInterest}
+              />
+            </div>
+            <div className="legend-block">
+              <p className="legend-lead">
+                Сетка: 10 уровней от центра (0 ч) к внешней окружности (максимум
+                времени).
+              </p>
+              <div className="legend">
+                <span>
+                  <i className="swatch" style={{ background: palette.red }} />
+                  0 уровень — недосып / фрустрация
+                </span>
+                <span>
+                  <i className="swatch" style={{ background: palette.green }} />
+                  5 уровень — норма
+                </span>
+                <span>
+                  <i className="swatch" style={{ background: palette.red }} />
+                  10 уровень — пересып / переработка
+                </span>
+              </div>
+              <p className="legend-note">
+                От 5-го уровня шкала снова краснеет: избыток сна ведёт к
+                недомоганию. Переработка ведёт к выгоранию и потере
+                производительности.
+              </p>
+              <p className="legend-note">
+                И так в любой сфере: нельзя решить проблему, просто посвятив ей
+                всё время.
+              </p>
+              <p className="legend-note">
+                Следует руководствоваться принципом разумной достаточности:
+                результат растёт, пока соблюдается баланс пропорции «эффективность
+                / время», пока польза от добавленного времени всё ещё больше потерь
+                от утраты эффективности.
+              </p>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <section className="table-panel">
         <h2>
@@ -910,6 +1000,41 @@ export default function App() {
         </h2>
         <InterestTable interests={weeklyInterests} />
       </section>
+
+      {store.feelConfirmed ? (
+        <nav className="tabbar" aria-label="Разделы">
+          <TabButton
+            id="map"
+            label="Карта"
+            active={mobileTab === "map"}
+            onClick={() => setMobileTab("map")}
+          />
+          <TabButton
+            id="timer"
+            label="Таймер"
+            active={mobileTab === "timer"}
+            onClick={() => setMobileTab("timer")}
+          />
+          <TabButton
+            id="calendar"
+            label="Календарь"
+            active={mobileTab === "calendar"}
+            onClick={() => setMobileTab("calendar")}
+          />
+          <TabButton
+            id="export"
+            label="Выгрузка"
+            active={mobileTab === "export"}
+            onClick={() => setMobileTab("export")}
+          />
+          <TabButton
+            id="import"
+            label="Загрузка"
+            active={mobileTab === "import"}
+            onClick={() => setMobileTab("import")}
+          />
+        </nav>
+      ) : null}
 
       <div className="toast-stack" aria-live="polite">
         {toasts.map((toast) => (
@@ -930,20 +1055,26 @@ export default function App() {
 }
 
 function TimerPanel({
+  className,
   dateKey,
   spheres,
   runningId,
   runningLabel,
   elapsed,
+  paused,
   onStart,
+  onPause,
   onStop,
 }: {
+  className?: string;
   dateKey: DateKey;
   spheres: Interest[];
   runningId: string | null;
   runningLabel?: string;
   elapsed: string;
+  paused: boolean;
   onStart: (id: string) => void;
+  onPause: () => void;
   onStop: () => void;
 }) {
   const fallbackId = spheres.find((item) => item.id === "work")?.id ?? spheres[0]?.id ?? "";
@@ -952,35 +1083,31 @@ function TimerPanel({
     runningId ??
     (spheres.some((item) => item.id === userPickedId) ? userPickedId : fallbackId);
   const selected = spheres.find((item) => item.id === pickedId);
+  const locked = runningId != null;
 
   return (
-    <section className="timer" aria-label="Секундомер">
+    <section className={`timer${className ? ` ${className}` : ""}`} aria-label="Секундомер">
       <p className="timer-date">{formatDateTitle(dateKey)}</p>
+      <SphereDrum
+        spheres={spheres}
+        value={pickedId}
+        disabled={locked}
+        onChange={setUserPickedId}
+      />
       <p className="timer-time" aria-live="polite">
         {elapsed}
       </p>
-      {runningId && runningLabel ? (
-        <p className="timer-running">Идёт: {runningLabel}</p>
-      ) : (
-        <p className="timer-running">Выберите сферу и нажмите Старт</p>
-      )}
-      <div className="timer-spheres" role="group" aria-label="Сфера для таймера">
-        {spheres.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`timer-chip${item.id === pickedId ? " active" : ""}${item.id === runningId ? " running" : ""}`}
-            disabled={runningId != null && item.id !== runningId}
-            onClick={() => setUserPickedId(item.id)}
-          >
-            {item.name}
-          </button>
-        ))}
-      </div>
+      <p className="timer-running">
+        {runningId && runningLabel
+          ? paused
+            ? `Пауза: ${runningLabel}`
+            : `Идёт: ${runningLabel}`
+          : "Прокрутите барабан и нажмите Старт"}
+      </p>
       <div className="timer-actions">
-        {runningId ? (
-          <button type="button" className="pill timer-btn" onClick={onStop}>
-            Стоп
+        {runningId && !paused ? (
+          <button type="button" className="pill timer-btn" onClick={onPause}>
+            Пауза
           </button>
         ) : (
           <button
@@ -992,8 +1119,213 @@ function TimerPanel({
             Старт
           </button>
         )}
+        {runningId && paused ? (
+          <button type="button" className="pill ghost timer-btn" onClick={onStop}>
+            Стоп
+          </button>
+        ) : null}
       </div>
     </section>
+  );
+}
+
+const DRUM_ITEM = 44;
+
+function SphereDrum({
+  spheres,
+  value,
+  disabled,
+  onChange,
+}: {
+  spheres: Interest[];
+  value: string;
+  disabled: boolean;
+  onChange: (id: string) => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const snapTimer = useRef<number | null>(null);
+
+  const sphereIds = spheres.map((item) => item.id).join("|");
+
+  useEffect(() => {
+    const index = Math.max(0, spheres.findIndex((item) => item.id === value));
+    const node = listRef.current;
+    if (!node) return;
+    node.scrollTop = index * DRUM_ITEM;
+  }, [value, sphereIds, spheres]);
+
+  function snapTo(index: number) {
+    const node = listRef.current;
+    if (!node) return;
+    const nextIndex = Math.max(0, Math.min(spheres.length - 1, index));
+    const next = spheres[nextIndex];
+    if (next && next.id !== value) onChange(next.id);
+    node.scrollTo({ top: nextIndex * DRUM_ITEM, behavior: "smooth" });
+  }
+
+  return (
+    <div className={`drum${disabled ? " locked" : ""}`} aria-label="Сфера">
+      <div className="drum-shade drum-shade-top" />
+      <div className="drum-shade drum-shade-bottom" />
+      <div className="drum-band" />
+      <div
+        ref={listRef}
+        className="drum-list"
+        onScroll={() => {
+          if (disabled) return;
+          const node = listRef.current;
+          if (!node) return;
+          const index = Math.round(node.scrollTop / DRUM_ITEM);
+          const next = spheres[Math.max(0, Math.min(spheres.length - 1, index))];
+          if (next && next.id !== value) onChange(next.id);
+          if (snapTimer.current != null) window.clearTimeout(snapTimer.current);
+          snapTimer.current = window.setTimeout(() => snapTo(index), 90);
+        }}
+      >
+        <div className="drum-pad" />
+        {spheres.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`drum-item${item.id === value ? " active" : ""}`}
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) return;
+              onChange(item.id);
+              const index = spheres.findIndex((entry) => entry.id === item.id);
+              listRef.current?.scrollTo({ top: index * DRUM_ITEM, behavior: "smooth" });
+            }}
+          >
+            {item.name}
+          </button>
+        ))}
+        <div className="drum-pad" />
+      </div>
+    </div>
+  );
+}
+
+function CalendarMonth({
+  year,
+  month,
+  selected,
+  today,
+  marked,
+  onPrev,
+  onNext,
+  onSelect,
+}: {
+  year: number;
+  month: number;
+  selected: DateKey;
+  today: DateKey;
+  marked: string[];
+  onPrev: () => void;
+  onNext: () => void;
+  onSelect: (key: DateKey) => void;
+}) {
+  const cells = monthCells(year, month);
+  const marks = new Set(marked);
+
+  return (
+    <section className="calendar" aria-label="Календарь">
+      <div className="calendar-head">
+        <button type="button" className="pill ghost" onClick={onPrev}>
+          ←
+        </button>
+        <strong>{formatMonthTitle(year, month)}</strong>
+        <button type="button" className="pill ghost" onClick={onNext}>
+          →
+        </button>
+      </div>
+      <div className="calendar-weekdays">
+        {DAYS.map((day) => (
+          <span key={day.id}>{day.short}</span>
+        ))}
+      </div>
+      <div className="calendar-grid">
+        {cells.map((cell, index) =>
+          cell.dateKey ? (
+            <button
+              key={cell.dateKey}
+              type="button"
+              className={`calendar-day${cell.dateKey === selected ? " selected" : ""}${cell.dateKey === today ? " today" : ""}${marks.has(cell.dateKey) ? " marked" : ""}`}
+              onClick={() => onSelect(cell.dateKey!)}
+            >
+              {cell.day}
+            </button>
+          ) : (
+            <span key={`empty-${index}`} className="calendar-day empty" />
+          ),
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TabButton({
+  id,
+  label,
+  active,
+  onClick,
+}: {
+  id: "map" | "timer" | "calendar" | "export" | "import";
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`tabbar-btn${active ? " active" : ""}`}
+      onClick={onClick}
+    >
+      <TabIcon id={id} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function TabIcon({ id }: { id: "map" | "timer" | "calendar" | "export" | "import" }) {
+  if (id === "map") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden>
+        <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (id === "timer") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden>
+        <circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M9 4.5h6" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M12 13V9.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      </svg>
+    );
+  }
+  if (id === "calendar") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden>
+        <rect x="4" y="5.5" width="16" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M4 10h16M8 4v3.2M16 4v3.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      </svg>
+    );
+  }
+  if (id === "export") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden>
+        <path d="M12 5v10M8.4 8.4 12 5l3.6 3.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M6 16.5v2.2h12v-2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden>
+      <path d="M12 19V9M8.4 15.6 12 19l3.6-3.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M6 7.5V5.3h12v2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
   );
 }
 
@@ -1303,6 +1635,7 @@ function InterestEditor({
   draft,
   canAdd,
   timerOnly,
+  hideTime,
   onDraft,
   onAdd,
   onBump,
@@ -1314,6 +1647,7 @@ function InterestEditor({
   draft: string;
   canAdd: boolean;
   timerOnly: boolean;
+  hideTime?: boolean;
   onDraft: (value: string) => void;
   onAdd: () => void;
   onBump: (id: string, dir: 1 | -1, source: "wheel" | "list") => void;
@@ -1422,6 +1756,7 @@ function InterestEditor({
                   </button>
                 )}
               </div>
+              {hideTime ? null : (
               <div className="interest-row">
                 <button
                   type="button"
@@ -1463,6 +1798,7 @@ function InterestEditor({
                 </button>
                 <em>{formatMinutes(item.minutes)}</em>
               </div>
+              )}
             </li>
           );
         })}

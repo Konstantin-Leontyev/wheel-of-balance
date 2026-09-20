@@ -42,6 +42,10 @@ h3 {
   gap: 24px;
 }
 
+.mobile-toolbar {
+  display: none;
+}
+
 .feel-banner,
 .timer,
 .backup {
@@ -115,6 +119,158 @@ h3 {
   flex-direction: column;
   align-items: center;
   gap: 10px;
+}
+
+.drum {
+  position: relative;
+  width: min(320px, 100%);
+  height: 220px;
+  overflow: hidden;
+}
+
+.drum-list {
+  height: 220px;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-padding: 88px 0;
+  scrollbar-width: none;
+}
+
+.drum-list::-webkit-scrollbar {
+  display: none;
+}
+
+.drum-item,
+.drum-pad {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  scroll-snap-align: center;
+}
+
+.drum-pad {
+  height: 88px;
+}
+
+.drum-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #9a938b;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.drum-item.active {
+  color: #1c1a17;
+  font-weight: 600;
+}
+
+.drum-band {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 88px;
+  height: 44px;
+  border-top: 1px solid #d9d2c8;
+  border-bottom: 1px solid #d9d2c8;
+  pointer-events: none;
+}
+
+.drum-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 88px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.drum-shade-top {
+  top: 0;
+  background: linear-gradient(#fffcf7, rgb(255 252 247 / 20%));
+}
+
+.drum-shade-bottom {
+  bottom: 0;
+  background: linear-gradient(rgb(255 252 247 / 20%), #fffcf7);
+}
+
+.drum.locked {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.calendar-panel,
+.calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calendar {
+  padding: 16px;
+  border: 1px solid #d9d2c8;
+  border-radius: 12px;
+  background: #fffcf7;
+}
+
+.calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.calendar-weekdays,
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.calendar-weekdays span,
+.calendar-day {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.calendar-weekdays span {
+  color: #9a938b;
+}
+
+.calendar-day {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.calendar-day.empty {
+  pointer-events: none;
+}
+
+.calendar-day.today {
+  border: 1px solid #d9d2c8;
+}
+
+.calendar-day.marked {
+  font-weight: 600;
+}
+
+.calendar-day.selected {
+  background: #1c1a17;
+  color: #fffcf7;
+}
+
+.tabbar {
+  display: none;
 }
 
 .timer-date,
@@ -890,17 +1046,98 @@ tbody td:first-child {
 
 @media (max-width: 720px) {
   .page {
-    padding: 16px 12px calc(28px + env(safe-area-inset-bottom));
+    padding: 0 12px calc(84px + env(safe-area-inset-bottom));
     gap: 16px;
   }
 
-  .stats,
-  .day-tabs {
-    display: none;
+  .tab-hidden {
+    display: none !important;
   }
 
-  .map-head {
+  .tabbar {
+    display: flex;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    z-index: 9;
+    align-items: stretch;
     justify-content: space-between;
+    gap: 2px;
+    padding: 8px 6px;
+    border: 1px solid #d9d2c8;
+    border-radius: 16px;
+    background: #fffcf7;
+  }
+
+  .tabbar-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 4px 2px;
+    border: 0;
+    background: transparent;
+    color: #9a938b;
+    font-size: 10px;
+    font-family: "Avenir Next", "Segoe UI", sans-serif;
+    cursor: pointer;
+  }
+
+  .tabbar-btn.active {
+    color: #1c1a17;
+  }
+
+  .tabbar-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .mobile-toolbar {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 8;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 -12px;
+    padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+    background: #f4f0ea;
+    border-bottom: 1px solid #e6e0d6;
+  }
+
+  .mobile-toolbar-text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .mobile-toolbar-text strong {
+    font-size: 16px;
+    line-height: 1.2;
+  }
+
+  .mobile-toolbar-text span {
+    color: #6b6560;
+    font-size: 13px;
+    font-family: "Avenir Next", "Segoe UI", sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stats,
+  .day-tabs,
+  .backup,
+  .legend-block,
+  .table-panel,
+  .map-head,
+  .date-line,
+  .timer-date {
+    display: none;
   }
 
   .timer-time {

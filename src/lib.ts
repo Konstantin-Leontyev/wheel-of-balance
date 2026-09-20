@@ -106,8 +106,9 @@ export type DateKey = string;
 
 export type RunningTimer = {
   interestId: string;
-  startedAt: number;
   dateKey: DateKey;
+  accumulatedMs: number;
+  runningSince: number | null;
 };
 
 export type AppPersist = {
@@ -115,6 +116,7 @@ export type AppPersist = {
   actualByDate: Record<DateKey, Interest[]>;
   runningTimer: RunningTimer | null;
   feelConfirmed: boolean;
+  feelSkipped: boolean;
   introSeen: boolean;
 };
 
@@ -179,6 +181,58 @@ export function formatElapsed(ms: number): string {
 
 export function elapsedMinutes(startedAt: number, endedAt = Date.now()): number {
   return Math.floor(Math.max(0, endedAt - startedAt) / 60_000);
+}
+
+export function normalizeRunningTimer(value: {
+  interestId: string;
+  dateKey: DateKey;
+  accumulatedMs?: number;
+  runningSince?: number | null;
+  startedAt?: number;
+}): RunningTimer {
+  if (typeof value.accumulatedMs === "number") {
+    return {
+      interestId: value.interestId,
+      dateKey: value.dateKey,
+      accumulatedMs: value.accumulatedMs,
+      runningSince: typeof value.runningSince === "number" ? value.runningSince : null,
+    };
+  }
+  return {
+    interestId: value.interestId,
+    dateKey: value.dateKey,
+    accumulatedMs: 0,
+    runningSince: typeof value.startedAt === "number" ? value.startedAt : null,
+  };
+}
+
+export function timerElapsedMs(timer: RunningTimer, now = Date.now()): number {
+  const current = normalizeRunningTimer(timer);
+  const live = current.runningSince != null ? Math.max(0, now - current.runningSince) : 0;
+  return current.accumulatedMs + live;
+}
+
+export function monthCells(
+  year: number,
+  monthIndex: number,
+): Array<{ dateKey: DateKey | null; day: number | null }> {
+  const pad = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
+  const last = new Date(year, monthIndex + 1, 0).getDate();
+  const cells: Array<{ dateKey: DateKey | null; day: number | null }> = [];
+  for (let i = 0; i < pad; i += 1) cells.push({ dateKey: null, day: null });
+  for (let day = 1; day <= last; day += 1) {
+    cells.push({ dateKey: toDateKey(new Date(year, monthIndex, day)), day });
+  }
+  while (cells.length % 7 !== 0) cells.push({ dateKey: null, day: null });
+  return cells;
+}
+
+export function formatMonthTitle(year: number, monthIndex: number): string {
+  const text = new Date(year, monthIndex, 1).toLocaleDateString("ru-RU", {
+    month: "long",
+    year: "numeric",
+  });
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export function isSleepInterest(item: Interest): boolean {
@@ -349,11 +403,13 @@ export function sanitizeWeek(week: WeekPlan): WeekPlan {
 export function isRunningTimer(value: unknown): value is RunningTimer {
   if (!value || typeof value !== "object") return false;
   const timer = value as Record<string, unknown>;
-  return (
-    typeof timer.interestId === "string" &&
-    typeof timer.startedAt === "number" &&
-    typeof timer.dateKey === "string"
-  );
+  if (typeof timer.interestId !== "string" || typeof timer.dateKey !== "string") {
+    return false;
+  }
+  if (typeof timer.accumulatedMs === "number") {
+    return timer.runningSince === null || typeof timer.runningSince === "number";
+  }
+  return typeof timer.startedAt === "number";
 }
 
 export function isActualByDate(value: unknown): value is Record<DateKey, Interest[]> {
@@ -385,8 +441,11 @@ export function sanitizePersist(store: AppPersist): AppPersist {
         clampDayMinutes(items.map((item) => migrateInterest(item))),
       ]),
     ),
-    runningTimer: store.runningTimer,
+    runningTimer: store.runningTimer
+      ? normalizeRunningTimer(store.runningTimer)
+      : null,
     feelConfirmed: store.feelConfirmed,
+    feelSkipped: store.feelSkipped === true,
     introSeen: store.introSeen,
   };
 }
@@ -409,6 +468,7 @@ export function parseBackup(value: unknown): AppPersist | null {
     actualByDate: record.actualByDate ?? {},
     runningTimer: record.runningTimer ?? null,
     feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
+    feelSkipped: record.feelSkipped === true,
     introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
   };
   if (isAppPersist(loose)) return sanitizePersist(loose);
@@ -418,6 +478,7 @@ export function parseBackup(value: unknown): AppPersist | null {
       actualByDate: {},
       runningTimer: null,
       feelConfirmed: true,
+      feelSkipped: false,
       introSeen: true,
     };
   }
