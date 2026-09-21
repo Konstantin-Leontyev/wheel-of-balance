@@ -158,7 +158,9 @@ h3 {
   scroll-snap-type: y mandatory;
   scroll-padding: 88px 0;
   scrollbar-width: none;
+  overscroll-behavior: contain;
 }
+
 
 .drum-list::-webkit-scrollbar {
   display: none;
@@ -1149,6 +1151,15 @@ tbody td:first-child {
 }
 
 @media (max-width: 720px) {
+  html,
+  body,
+  html #root {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   .backup {
     flex-direction: column;
     align-items: stretch;
@@ -1163,29 +1174,60 @@ tbody td:first-child {
     height: 44px;
   }
 
-  html:has(.page-fit),
-  html:has(.page-fit) body,
-  html:has(.page-fit) #root {
+  html:has(.shell-fit),
+  html:has(.shell-fit) body,
+  html:has(.shell-fit) #root {
     height: 100%;
+    overflow: hidden;
     overscroll-behavior: none;
   }
 
+  .shell-phone,
+  .shell-nav,
+  .shell-fit {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  .shell-phone .page,
+  .shell-nav .page {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding-bottom: 8px;
+  }
+
+  .shell-phone .page:not(.page-fit),
+  .shell-nav .page:not(.page-fit) {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   .page {
-    padding: 0 12px calc(84px + env(safe-area-inset-bottom));
+    padding: 0 12px 8px;
     gap: 16px;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    min-width: 0;
   }
 
   .page.page-fit {
-    height: 100dvh;
-    max-height: 100dvh;
+    height: auto;
+    max-height: none;
     overflow: hidden;
     overscroll-behavior: none;
     gap: 0;
   }
 
   .page.page-fit:not(.page-timer) {
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: 0;
+    padding-right: 0;
   }
 
   .page.page-fit .mobile-toolbar {
@@ -1210,6 +1252,14 @@ tbody td:first-child {
 
   .page.page-fit .layout {
     container-type: size;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    place-items: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 0 4px;
   }
 
   .page.page-fit .timer {
@@ -1260,9 +1310,9 @@ tbody td:first-child {
 
   .page.page-fit .map-panel {
     position: relative;
-    width: 100%;
-    height: auto;
-    aspect-ratio: 1;
+    width: min(100cqw, 100cqh);
+    height: min(100cqw, 100cqh);
+    max-width: 100%;
     max-height: 100%;
     display: flex;
     align-items: center;
@@ -1297,14 +1347,13 @@ tbody td:first-child {
 
   .tabbar {
     display: flex;
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: calc(8px + env(safe-area-inset-bottom));
-    z-index: 40;
+    position: relative;
+    flex-shrink: 0;
+    z-index: 8;
     align-items: stretch;
     justify-content: space-between;
     gap: 2px;
+    margin: 0 12px max(8px, env(safe-area-inset-bottom));
     padding: 8px 6px;
     border: 1px solid #d9d2c8;
     border-radius: 16px;
@@ -1337,20 +1386,16 @@ tbody td:first-child {
 
   .mobile-toolbar {
     display: flex;
-    position: sticky;
-    top: 0;
+    position: relative;
+    flex-shrink: 0;
     z-index: 8;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin: 0 -12px;
+    width: 100%;
+    margin: 0;
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
     background: #f4f0ea;
-  }
-
-  .page.page-fit:not(.page-timer) .mobile-toolbar {
-    margin-left: -4px;
-    margin-right: -4px;
   }
 
   .mobile-toolbar-text {

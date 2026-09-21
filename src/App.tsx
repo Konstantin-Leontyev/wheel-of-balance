@@ -156,6 +156,44 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
+function useVisibleFrame(active: boolean) {
+  const [frame, setFrame] = useState(() => ({
+    top: 0,
+    left: 0,
+    width: typeof window !== "undefined" ? window.innerWidth : 0,
+    height: typeof window !== "undefined" ? window.innerHeight : 0,
+  }));
+
+  useEffect(() => {
+    if (!active) return;
+
+    const read = () => {
+      const view = window.visualViewport;
+      setFrame({
+        top: view?.offsetTop ?? 0,
+        left: view?.offsetLeft ?? 0,
+        width: view?.width ?? window.innerWidth,
+        height: view?.height ?? window.innerHeight,
+      });
+    };
+
+    read();
+    const view = window.visualViewport;
+    view?.addEventListener("resize", read);
+    view?.addEventListener("scroll", read);
+    window.addEventListener("resize", read);
+    window.addEventListener("orientationchange", read);
+    return () => {
+      view?.removeEventListener("resize", read);
+      view?.removeEventListener("scroll", read);
+      window.removeEventListener("resize", read);
+      window.removeEventListener("orientationchange", read);
+    };
+  }, [active]);
+
+  return frame;
+}
+
 function useTodayKey(): DateKey {
   const [key, setKey] = useState(todayDateKey);
   useEffect(() => {
@@ -199,6 +237,17 @@ export default function App() {
   const toastSeq = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const isMobile = useMediaQuery("(max-width: 720px)");
+  const viewFrame = useVisibleFrame(isMobile);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const pin = () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    };
+    pin();
+    window.addEventListener("scroll", pin, { passive: true });
+    return () => window.removeEventListener("scroll", pin);
+  }, [isMobile]);
   const todayKey = useTodayKey();
   const viewMode =
     !store.feelConfirmed ? "feel" : store.feelSkipped ? "fact" : mode;
@@ -677,7 +726,22 @@ export default function App() {
     : undefined;
 
   return (
-    <>
+    <div
+      className={`shell${isMobile ? " shell-phone" : ""}${
+        store.feelConfirmed ? " shell-nav" : ""
+      }${lockViewport ? " shell-fit" : ""}`}
+      style={
+        isMobile
+          ? {
+              position: "fixed",
+              top: viewFrame.top,
+              left: viewFrame.left,
+              width: viewFrame.width,
+              height: viewFrame.height,
+            }
+          : undefined
+      }
+    >
     <div
       className={`page${lockViewport ? " page-fit" : ""}${
         store.feelConfirmed && mobileTab === "timer" ? " page-timer" : ""
@@ -1197,7 +1261,7 @@ export default function App() {
           />
         </nav>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -1281,11 +1345,18 @@ function TimerPanel({
 }
 
 const DRUM_ITEM = 44;
+const DRUM_COPIES = 3;
+
+function wrapIndex(index: number, length: number) {
+  if (length <= 0) return 0;
+  return ((index % length) + length) % length;
+}
 
 function ValueDrum<T extends string | number>({
   items,
   value,
   disabled = false,
+  loop = false,
   ariaLabel,
   format,
   onChange,
@@ -1293,29 +1364,82 @@ function ValueDrum<T extends string | number>({
   items: readonly T[];
   value: T;
   disabled?: boolean;
+  loop?: boolean;
   ariaLabel: string;
   format?: (item: T) => string;
   onChange: (value: T) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const snapTimer = useRef<number | null>(null);
+  const jumping = useRef(false);
+  const lastEmitted = useRef(value);
   const key = items.join("|");
   const label = format ?? ((item: T) => String(item));
+  const count = items.length;
+  const looping = loop && count > 1;
+  const copies = looping ? DRUM_COPIES : 1;
+  const midCopy = looping ? 1 : 0;
+
+  function indexOfValue() {
+    return Math.max(0, items.indexOf(value));
+  }
+
+  function topFor(index: number, copy = midCopy) {
+    return (copy * count + index) * DRUM_ITEM;
+  }
+
+  function emit(index: number) {
+    const next = items[index];
+    if (next === undefined || next === lastEmitted.current) return;
+    lastEmitted.current = next;
+    onChange(next);
+  }
+
+  function jumpTo(node: HTMLDivElement, index: number, copy = midCopy) {
+    jumping.current = true;
+    const snap = node.style.scrollSnapType;
+    node.style.scrollSnapType = "none";
+    node.scrollTop = topFor(index, copy);
+    node.style.scrollSnapType = snap;
+    requestAnimationFrame(() => {
+      jumping.current = false;
+    });
+  }
 
   useEffect(() => {
-    const index = Math.max(0, items.indexOf(value));
     const node = listRef.current;
-    if (!node) return;
-    node.scrollTop = index * DRUM_ITEM;
-  }, [value, key]);
+    if (!node || count === 0) return;
+    jumpTo(node, indexOfValue());
+    lastEmitted.current = value;
+  }, [key]);
 
-  function snapTo(index: number) {
+  useEffect(() => {
+    if (lastEmitted.current === value) return;
+    lastEmitted.current = value;
     const node = listRef.current;
-    if (!node) return;
-    const nextIndex = Math.max(0, Math.min(items.length - 1, index));
-    const next = items[nextIndex];
-    if (next !== undefined && next !== value) onChange(next);
-    node.scrollTo({ top: nextIndex * DRUM_ITEM, behavior: "smooth" });
+    if (!node || count === 0) return;
+    node.scrollTo({ top: topFor(indexOfValue()), behavior: "smooth" });
+  }, [value]);
+
+  function snapTo(raw: number) {
+    const node = listRef.current;
+    if (!node || count === 0) return;
+    const index = looping ? wrapIndex(raw, count) : Math.max(0, Math.min(count - 1, raw));
+    emit(index);
+    if (!looping) {
+      node.scrollTo({ top: topFor(index, 0), behavior: "smooth" });
+      return;
+    }
+    const copy = Math.floor(Math.max(0, raw) / count);
+    if (copy !== midCopy) jumpTo(node, index);
+    else node.scrollTo({ top: topFor(index), behavior: "smooth" });
+  }
+
+  const rows = [];
+  for (let copy = 0; copy < copies; copy += 1) {
+    items.forEach((item, itemIndex) => {
+      rows.push({ item, itemIndex, copy, key: `${copy}:${itemIndex}:${String(item)}` });
+    });
   }
 
   return (
@@ -1325,36 +1449,39 @@ function ValueDrum<T extends string | number>({
       <div className="drum-band" />
       <div
         ref={listRef}
-        className="drum-list"
+        className={`drum-list${looping ? " drum-loop" : ""}`}
         onScroll={() => {
-          if (disabled) return;
+          if (disabled || jumping.current) return;
           const node = listRef.current;
-          if (!node) return;
-          const index = Math.round(node.scrollTop / DRUM_ITEM);
-          const next = items[Math.max(0, Math.min(items.length - 1, index))];
-          if (next !== undefined && next !== value) onChange(next);
+          if (!node || count === 0) return;
+          const raw = Math.round(node.scrollTop / DRUM_ITEM);
+          const index = looping ? wrapIndex(raw, count) : Math.max(0, Math.min(count - 1, raw));
+          emit(index);
+          if (looping && (raw < count || raw >= count * 2)) jumpTo(node, index);
           if (snapTimer.current != null) window.clearTimeout(snapTimer.current);
-          snapTimer.current = window.setTimeout(() => snapTo(index), 90);
+          snapTimer.current = window.setTimeout(() => snapTo(raw), 90);
         }}
       >
-        <div className="drum-pad" />
-        {items.map((item) => (
+        {looping ? null : <div className="drum-pad" />}
+        {rows.map((row) => (
           <button
-            key={String(item)}
+            key={row.key}
             type="button"
-            className={`drum-item${item === value ? " active" : ""}`}
+            className={`drum-item${row.item === value ? " active" : ""}`}
             disabled={disabled}
             onClick={() => {
               if (disabled) return;
-              onChange(item);
-              const index = items.indexOf(item);
-              listRef.current?.scrollTo({ top: index * DRUM_ITEM, behavior: "smooth" });
+              emit(row.itemIndex);
+              listRef.current?.scrollTo({
+                top: topFor(row.itemIndex),
+                behavior: "smooth",
+              });
             }}
           >
-            {label(item)}
+            {label(row.item)}
           </button>
         ))}
-        <div className="drum-pad" />
+        {looping ? null : <div className="drum-pad" />}
       </div>
     </div>
   );
@@ -1376,6 +1503,7 @@ function SphereDrum({
       items={spheres.map((item) => item.id)}
       value={value}
       disabled={disabled}
+      loop
       ariaLabel="Сфера"
       format={(id) => spheres.find((item) => item.id === id)?.name ?? id}
       onChange={onChange}
@@ -1443,6 +1571,7 @@ function TimeEditModal({
               <ValueDrum
                 items={hourItems}
                 value={hours}
+                loop
                 ariaLabel="Часы"
                 onChange={setHours}
               />
@@ -1455,6 +1584,7 @@ function TimeEditModal({
               <ValueDrum
                 items={minuteItems}
                 value={mins}
+                loop
                 ariaLabel="Минуты"
                 format={(item) => String(item).padStart(2, "0")}
                 onChange={setMins}
