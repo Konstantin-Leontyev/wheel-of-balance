@@ -165,6 +165,10 @@ h3 {
   overscroll-behavior: contain;
 }
 
+.drum-loop {
+  scroll-padding: 0;
+}
+
 
 .drum-list::-webkit-scrollbar {
   display: none;
@@ -481,7 +485,8 @@ h3 {
   padding: 12px 24px 20px;
 }
 
-.modal-time {
+.modal-time,
+.modal-periods {
   width: min(400px, 100%);
 }
 
@@ -489,6 +494,42 @@ h3 {
   overflow: hidden;
   align-items: center;
   text-align: center;
+}
+
+.period-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.period-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid #d9d2c8;
+  border-radius: 12px;
+  background: #fffcf7;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.period-row strong {
+  font-size: 16px;
+}
+
+.period-row span {
+  color: #6b6560;
+  font-size: 13px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
 }
 
 .time-edit-drums {

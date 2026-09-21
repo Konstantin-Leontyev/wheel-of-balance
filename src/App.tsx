@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import {
   CX,
   CY,
@@ -19,15 +19,18 @@ import {
   WORK_NORM_MINUTES,
   WHEEL_STEP_MINUTES,
   allocateTimerMinutes,
-  applyMinutesByDates,
+  addManualPeriod,
   actualDayFor,
   aggregateWeek,
+  appendTimerPeriods,
   buildBackup,
   clampDayMinutes,
+  clampShareMinutes,
   closedCurve,
   colorAtLevel,
   dailyMinutes,
   dateKeyToDayId,
+  dayPeriods,
   dayUsedMinutes,
   defaultWeek,
   floorFor,
@@ -43,16 +46,20 @@ import {
   nextListMinutes,
   nextWheelMinutes,
   normalizeRunningTimer,
+  patchDayPeriods,
   pauseRunningTimer,
   resumeRunningTimer,
   startRunningTimer,
   parseBackup,
   palette,
   parseDateKey,
+  periodShareFor,
+  periodsForInterest,
   polar,
   primaryMinutes,
   levelValue,
   sanitizeWeek,
+  setShareMinutes,
   timerElapsedMs,
   todayDateKey,
   todayDayId,
@@ -64,6 +71,7 @@ import {
   type AppPersist,
   type DateKey,
   type DayId,
+  type DayPeriod,
   type Interest,
 } from "./lib";
 
@@ -83,6 +91,7 @@ function emptyStore(): AppPersist {
   return {
     feelWeek: defaultWeek(),
     actualByDate: {},
+    periodsByDate: {},
     runningTimer: null,
     feelConfirmed: false,
     feelSkipped: false,
@@ -129,6 +138,7 @@ function readBoot(): BootResult {
           store: {
             feelWeek: sanitizeWeek(parsed),
             actualByDate: {},
+            periodsByDate: {},
             runningTimer: null,
             feelConfirmed: true,
             feelSkipped: false,
@@ -228,6 +238,11 @@ export default function App() {
   const [introOpen, setIntroOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [timeEditId, setTimeEditId] = useState<string | null>(null);
+  const [periodListId, setPeriodListId] = useState<string | null>(null);
+  const [periodEdit, setPeriodEdit] = useState<{
+    interestId: string;
+    periodId: string | "new";
+  } | null>(null);
   const [mobileTab, setMobileTab] = useState<MobileTab>("timer");
   const [calCursor, setCalCursor] = useState(() => {
     const date = parseDateKey(todayDateKey());
@@ -308,10 +323,12 @@ export default function App() {
   }, [store.runningTimer]);
 
   useEffect(() => {
-    if (!introOpen && !resetOpen && !timeEditId) return;
+    if (!introOpen && !resetOpen && !timeEditId && !periodListId && !periodEdit) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (timeEditId) setTimeEditId(null);
+      if (periodEdit) setPeriodEdit(null);
+      else if (periodListId) setPeriodListId(null);
+      else if (timeEditId) setTimeEditId(null);
       else if (resetOpen) setResetOpen(false);
       else closeIntro();
     }
@@ -319,7 +336,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKey);
     };
-  }, [introOpen, resetOpen, timeEditId]);
+  }, [introOpen, resetOpen, timeEditId, periodListId, periodEdit]);
 
   function addToast(tone: ToastItem["tone"], title: string, body: string) {
     const id = ++toastSeq.current;
@@ -350,13 +367,6 @@ export default function App() {
     setStore((prev) => ({
       ...prev,
       feelWeek: { ...prev.feelWeek, [dayId]: clampDayMinutes(next) },
-    }));
-  }
-
-  function setActualDay(dateKey: DateKey, next: Interest[]) {
-    setStore((prev) => ({
-      ...prev,
-      actualByDate: { ...prev.actualByDate, [dateKey]: clampDayMinutes(next) },
     }));
   }
 
@@ -410,26 +420,29 @@ export default function App() {
   const timerLive = running ? timerElapsedMs(running, now) : 0;
   const timerPaused = running != null && running.runningSince == null;
 
-  function writeDayMinutes(id: string, next: number, nextAux?: number) {
-    const current = interests.find((item) => item.id === id);
-    if (!current) return;
-    const auxMinutes =
-      nextAux == null ? Math.min(current.auxMinutes, next) : Math.min(nextAux, next);
-    if (next === current.minutes && auxMinutes === current.auxMinutes) return;
-    const used = dayUsedMinutes(interests);
-    const nextInterests = interests.map((item) =>
-      item.id === id ? { ...item, minutes: next, auxMinutes } : item,
-    );
-    const nextSleep = nextInterests.find((item) => item.locked) ?? nextInterests[0];
-    const nextWork = nextInterests.find((item) => item.id === "work");
-    if (sleep.minutes >= SLEEP_NORM_MINUTES && nextSleep.minutes < SLEEP_NORM_MINUTES) {
+  function noteBalanceToasts(prevItems: Interest[], nextItems: Interest[]) {
+    const prevSleep = prevItems.find((item) => item.locked) ?? prevItems[0];
+    const nextSleep = nextItems.find((item) => item.locked) ?? nextItems[0];
+    const prevWork = prevItems.find((item) => item.id === "work");
+    const nextWork = nextItems.find((item) => item.id === "work");
+    if (
+      prevSleep &&
+      nextSleep &&
+      prevSleep.minutes >= SLEEP_NORM_MINUTES &&
+      nextSleep.minutes < SLEEP_NORM_MINUTES
+    ) {
       addToast(
         "danger",
         "Сон ниже нормы",
         `8 ч в сутки — норма и полезный максимум. Сейчас ${formatMinutes(nextSleep.minutes)} в день. Это уже жертва здоровьем.`,
       );
     }
-    if (sleep.minutes <= SLEEP_NORM_MINUTES && nextSleep.minutes > SLEEP_NORM_MINUTES) {
+    if (
+      prevSleep &&
+      nextSleep &&
+      prevSleep.minutes <= SLEEP_NORM_MINUTES &&
+      nextSleep.minutes > SLEEP_NORM_MINUTES
+    ) {
       addToast(
         "warning",
         "Сон выше полезного максимума",
@@ -437,9 +450,9 @@ export default function App() {
       );
     }
     if (
-      work &&
+      prevWork &&
       nextWork &&
-      work.minutes <= WORK_NORM_MINUTES &&
+      prevWork.minutes <= WORK_NORM_MINUTES &&
       nextWork.minutes > WORK_NORM_MINUTES
     ) {
       addToast(
@@ -448,9 +461,29 @@ export default function App() {
         "Норма рабочего дня — 8 ч (5-й уровень). Дальше часов больше, эффективность падает, баланс нарушается.",
       );
     }
+  }
+
+  function commitFactStore(next: AppPersist) {
+    noteBalanceToasts(
+      actualDayFor(store.actualByDate, viewDateKey, store.feelWeek),
+      actualDayFor(next.actualByDate, viewDateKey, store.feelWeek),
+    );
+    commitStore(() => next);
+  }
+
+  function writeDayMinutes(id: string, next: number, nextAux?: number) {
+    const current = interests.find((item) => item.id === id);
+    if (!current) return;
+    const auxMinutes =
+      nextAux == null ? Math.min(current.auxMinutes, next) : Math.min(nextAux, next);
+    if (next === current.minutes && auxMinutes === current.auxMinutes) return;
+    const nextInterests = interests.map((item) =>
+      item.id === id ? { ...item, minutes: next, auxMinutes } : item,
+    );
+    noteBalanceToasts(interests, nextInterests);
     if (
-      used < DAY_MINUTES &&
-      used - primaryMinutes(current) + (next - auxMinutes) >= DAY_MINUTES
+      dayUsedMinutes(interests) < DAY_MINUTES &&
+      dayUsedMinutes(interests) - primaryMinutes(current) + (next - auxMinutes) >= DAY_MINUTES
     ) {
       addToast(
         "warning",
@@ -458,14 +491,13 @@ export default function App() {
         "Этот день заполнен. Чтобы поднять одну сферу, сначала уберите часы у другой.",
       );
     }
-    if (viewMode === "feel") setFeelDay(nextInterests);
-    else setActualDay(viewDateKey, nextInterests);
+    setFeelDay(nextInterests);
   }
 
   function setItemMinutes(id: string, minutes: number) {
     const current = interests.find((item) => item.id === id);
     if (!current) return;
-    const floor = floorFor(current, viewMode === "fact");
+    const floor = floorFor(current, false);
     const used = dayUsedMinutes(interests);
     const currentPrimary = primaryMinutes(current);
     const roomPrimary = Math.max(0, DAY_MINUTES - used + currentPrimary);
@@ -477,11 +509,59 @@ export default function App() {
     writeDayMinutes(id, nextPrimary + auxMinutes, auxMinutes);
   }
 
+  function bumpFact(id: string, dir: 1 | -1, step: number) {
+    const current = interests.find((item) => item.id === id);
+    if (!current) return;
+    const periods = dayPeriods(store, viewDateKey);
+    const latest = [...periods].reverse().find((period) => periodShareFor(period, id));
+    if (!latest) {
+      if (dir < 0) return;
+      const result = addManualPeriod(store, viewDateKey, id, step);
+      if (result.added === 0) {
+        addToast(
+          "warning",
+          "В сутках только 24 часа",
+          "В этом дне больше нельзя добавить время. Чтобы поднять одну сферу, сначала уберите часы у другой.",
+        );
+        return;
+      }
+      commitFactStore(result.store);
+      return;
+    }
+    const share = periodShareFor(latest, id);
+    if (!share) return;
+    const nextMinutes = clampShareMinutes(
+      store,
+      viewDateKey,
+      latest.id,
+      id,
+      share.minutes + dir * step,
+    );
+    if (nextMinutes === share.minutes) {
+      if (dir > 0) {
+        addToast(
+          "warning",
+          "В сутках только 24 часа",
+          "В этом дне больше нельзя добавить время. Чтобы поднять одну сферу, сначала уберите часы у другой.",
+        );
+      }
+      return;
+    }
+    commitFactStore(
+      patchDayPeriods(store, viewDateKey, setShareMinutes(periods, latest.id, id, nextMinutes)),
+    );
+  }
+
   function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
     const used = dayUsedMinutes(interests);
     const current = interests.find((item) => item.id === id);
     if (!current) return;
     const actual = viewMode === "fact";
+    const step = source === "wheel" ? WHEEL_STEP_MINUTES : LIST_STEP_DAILY_MINUTES;
+    if (actual) {
+      bumpFact(id, dir, step);
+      return;
+    }
     const floor = floorFor(current, actual);
     const currentPrimary = primaryMinutes(current);
     const room = Math.max(0, DAY_MINUTES - used);
@@ -491,7 +571,6 @@ export default function App() {
         : nextListMinutes(currentPrimary, dir, floor, MAX_MINUTES_PER_INTEREST - current.auxMinutes, room);
     if (nextPrimary == null) {
       if (
-        !actual &&
         dir < 0 &&
         (current.id === "sleep" || current.locked) &&
         currentPrimary <= floor
@@ -502,7 +581,7 @@ export default function App() {
           "Ниже 4 ч в сутки опустить сон нельзя.",
         );
       }
-      if (dir > 0 && room < (source === "wheel" ? WHEEL_STEP_MINUTES : LIST_STEP_DAILY_MINUTES)) {
+      if (dir > 0 && room < step) {
         addToast(
           "warning",
           "В сутках только 24 часа",
@@ -512,6 +591,39 @@ export default function App() {
       return;
     }
     writeDayMinutes(id, nextPrimary + current.auxMinutes, current.auxMinutes);
+  }
+
+  function openTime(id: string) {
+    if (viewMode === "feel") setTimeEditId(id);
+    else setPeriodListId(id);
+  }
+
+  function savePeriodMinutes(minutes: number) {
+    if (!periodEdit) return;
+    const { interestId, periodId } = periodEdit;
+    if (periodId === "new") {
+      const result = addManualPeriod(store, viewDateKey, interestId, minutes);
+      if (result.added === 0 && minutes > 0) {
+        addToast(
+          "warning",
+          "В сутках только 24 часа",
+          "Этот день заполнен. Чтобы поднять одну сферу, сначала уберите часы у другой.",
+        );
+      } else {
+        commitFactStore(result.store);
+      }
+    } else {
+      const nextMinutes = clampShareMinutes(store, viewDateKey, periodId, interestId, minutes);
+      commitFactStore(
+        patchDayPeriods(
+          store,
+          viewDateKey,
+          setShareMinutes(dayPeriods(store, viewDateKey), periodId, interestId, nextMinutes),
+        ),
+      );
+    }
+    setPeriodEdit(null);
+    setPeriodListId(null);
   }
 
   function addInterest() {
@@ -557,8 +669,26 @@ export default function App() {
 
   function removeInterest(id: string) {
     const next = interests.filter((item) => item.id !== id || item.locked);
-    if (viewMode === "feel") setFeelDay(next);
-    else setActualDay(viewDateKey, next);
+    if (viewMode === "feel") {
+      setFeelDay(next);
+      return;
+    }
+    const periods = dayPeriods(store, viewDateKey)
+      .map((period) => ({
+        ...period,
+        shares: period.shares.filter((share) => share.interestId !== id),
+      }))
+      .filter((period) => period.shares.length > 0);
+    commitStore((prev) =>
+      patchDayPeriods(
+        {
+          ...prev,
+          actualByDate: { ...prev.actualByDate, [viewDateKey]: next },
+        },
+        viewDateKey,
+        periods,
+      ),
+    );
   }
 
   function renameInterest(id: string, name: string) {
@@ -635,29 +765,15 @@ export default function App() {
     const template = actualDayFor(store.actualByDate, timer.dateKey, store.feelWeek);
     const splitByDate = isSleepTimerId(timer.interestId, template);
     const chunks = allocateTimerMinutes(timer, now, splitByDate);
-    const result = applyMinutesByDates(
-      store.actualByDate,
-      store.feelWeek,
+    const result = appendTimerPeriods(
+      store,
       timer.interestId,
+      timer.secondaryId,
       chunks,
     );
-    const auxChunks = result.parts
-      .filter((part) => part.added > 0)
-      .map((part) => ({ dateKey: part.dateKey, minutes: part.added }));
-    const aux =
-      timer.secondaryId && auxChunks.length > 0
-        ? applyMinutesByDates(
-            result.actualByDate,
-            store.feelWeek,
-            timer.secondaryId,
-            auxChunks,
-            "auxiliary",
-          )
-        : null;
-    commitStore((prev) => ({
-      ...prev,
+    commitStore(() => ({
+      ...result.store,
       runningTimer: null,
-      actualByDate: aux?.actualByDate ?? result.actualByDate,
     }));
     const primaryName =
       template.find((item) => item.id === timer.interestId)?.name ?? "сфера";
@@ -684,7 +800,7 @@ export default function App() {
           .map((part) => `${formatMinutes(part.added)} — ${formatDateTitle(part.dateKey)}`)
           .join(". "),
       );
-    } else if (secondaryName && (aux?.added ?? 0) > 0) {
+    } else if (secondaryName && result.auxAdded > 0) {
       addToast(
         "success",
         "Два занятия",
@@ -748,9 +864,11 @@ export default function App() {
       commitStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
     } else {
       commitStore((prev) => {
-        const next = { ...prev.actualByDate };
-        delete next[viewDateKey];
-        return { ...prev, actualByDate: next };
+        const nextActual = { ...prev.actualByDate };
+        const nextPeriods = { ...prev.periodsByDate };
+        delete nextActual[viewDateKey];
+        delete nextPeriods[viewDateKey];
+        return { ...prev, actualByDate: nextActual, periodsByDate: nextPeriods };
       });
     }
     setResetOpen(false);
@@ -769,6 +887,40 @@ export default function App() {
   const timeEdit = timeEditId
     ? interests.find((item) => item.id === timeEditId)
     : undefined;
+  const periodListItem = periodListId
+    ? interests.find((item) => item.id === periodListId)
+    : undefined;
+  const periodRows = periodListId
+    ? periodsForInterest(dayPeriods(store, viewDateKey), periodListId)
+    : [];
+  const periodEditItem = periodEdit
+    ? interests.find((item) => item.id === periodEdit.interestId)
+    : undefined;
+  const periodEditShare =
+    periodEdit && periodEdit.periodId !== "new"
+      ? periodShareFor(
+          dayPeriods(store, viewDateKey).find((period) => period.id === periodEdit.periodId) ?? {
+            id: "",
+            source: "manual",
+            shares: [],
+          },
+          periodEdit.interestId,
+        )
+      : undefined;
+  const periodEditMinutes = periodEditShare?.minutes ?? 0;
+  const periodEditMax =
+    periodEdit && periodEdit.periodId !== "new"
+      ? clampShareMinutes(
+          store,
+          viewDateKey,
+          periodEdit.periodId,
+          periodEdit.interestId,
+          16 * HOUR_MINUTES,
+        )
+      : Math.min(
+          MAX_MINUTES_PER_INTEREST - (periodEditItem?.minutes ?? 0),
+          Math.max(0, DAY_MINUTES - dayUsedMinutes(interests)),
+        );
 
   return (
     <div
@@ -968,12 +1120,12 @@ export default function App() {
         </div>
       ) : null}
 
-      {timeEdit ? (
+      {timeEdit && viewMode === "feel" ? (
         <TimeEditModal
           name={timeEdit.name}
           dateLabel={formatDateTitle(viewDateKey)}
           minutes={timeEdit.minutes}
-          minMinutes={floorFor(timeEdit, viewMode === "fact")}
+          minMinutes={floorFor(timeEdit, false)}
           maxMinutes={Math.min(
             MAX_MINUTES_PER_INTEREST,
             timeEdit.minutes + dayRoom,
@@ -983,6 +1135,39 @@ export default function App() {
             setItemMinutes(timeEdit.id, minutes);
             setTimeEditId(null);
           }}
+        />
+      ) : null}
+
+      {periodListItem && !periodEdit ? (
+        <PeriodListModal
+          name={periodListItem.name}
+          dateLabel={formatDateTitle(viewDateKey)}
+          periods={periodRows}
+          interestId={periodListItem.id}
+          spheres={interests}
+          onClose={() => setPeriodListId(null)}
+          onAdd={() =>
+            setPeriodEdit({ interestId: periodListItem.id, periodId: "new" })
+          }
+          onPick={(periodId) =>
+            setPeriodEdit({ interestId: periodListItem.id, periodId })
+          }
+        />
+      ) : null}
+
+      {periodEdit && periodEditItem ? (
+        <TimeEditModal
+          name={periodEditItem.name}
+          dateLabel={
+            periodEdit.periodId === "new"
+              ? `${formatDateTitle(viewDateKey)} · новая запись`
+              : formatDateTitle(viewDateKey)
+          }
+          minutes={periodEditMinutes}
+          minMinutes={0}
+          maxMinutes={Math.max(periodEditMinutes, periodEditMax)}
+          onCancel={() => setPeriodEdit(null)}
+          onSave={savePeriodMinutes}
         />
       ) : null}
 
@@ -1244,7 +1429,7 @@ export default function App() {
                 timerOnly={viewMode === "fact"}
                 onBump={bump}
                 onRename={renameInterest}
-                onEditTime={setTimeEditId}
+                onEditTime={openTime}
               />
             </div>
             <div className="legend-block">
@@ -1464,6 +1649,7 @@ function TimerPanel({
 }
 
 const DRUM_ITEM = 44;
+const DRUM_BAND = DRUM_ITEM * 2;
 const DRUM_COPIES = 3;
 
 function wrapIndex(index: number, length: number) {
@@ -1479,6 +1665,7 @@ function ValueDrum<T extends string | number>({
   ariaLabel,
   format,
   mark,
+  readRef,
   onChange,
   onItemClick,
 }: {
@@ -1489,6 +1676,7 @@ function ValueDrum<T extends string | number>({
   ariaLabel: string;
   format?: (item: T) => ReactNode;
   mark?: (item: T) => "primary" | "secondary" | null;
+  readRef?: MutableRefObject<(() => T) | null>;
   onChange: (value: T) => void;
   onItemClick?: (value: T) => void;
 }) {
@@ -1508,7 +1696,28 @@ function ValueDrum<T extends string | number>({
   }
 
   function topFor(index: number, copy = midCopy) {
-    return (copy * count + index) * DRUM_ITEM;
+    const row = (copy * count + index) * DRUM_ITEM;
+    return looping ? row - DRUM_BAND : row;
+  }
+
+  function indexFromScroll(scrollTop: number) {
+    const raw = looping
+      ? Math.round((scrollTop + DRUM_BAND) / DRUM_ITEM)
+      : Math.round(scrollTop / DRUM_ITEM);
+    return looping ? wrapIndex(raw, count) : Math.max(0, Math.min(count - 1, raw));
+  }
+
+  function rawFromScroll(scrollTop: number) {
+    return looping
+      ? Math.round((scrollTop + DRUM_BAND) / DRUM_ITEM)
+      : Math.round(scrollTop / DRUM_ITEM);
+  }
+
+  function readValue(): T {
+    const node = listRef.current;
+    if (!node || count === 0) return lastEmitted.current;
+    const next = items[indexFromScroll(node.scrollTop)];
+    return next ?? lastEmitted.current;
   }
 
   function emit(index: number) {
@@ -1525,16 +1734,25 @@ function ValueDrum<T extends string | number>({
     node.scrollTop = topFor(index, copy);
     node.style.scrollSnapType = snap;
     requestAnimationFrame(() => {
-      jumping.current = false;
+      requestAnimationFrame(() => {
+        jumping.current = false;
+      });
     });
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = listRef.current;
     if (!node || count === 0) return;
     jumpTo(node, indexOfValue());
     lastEmitted.current = value;
   }, [key]);
+
+  useEffect(() => {
+    if (readRef) readRef.current = readValue;
+    return () => {
+      if (readRef) readRef.current = null;
+    };
+  });
 
   useEffect(() => {
     if (lastEmitted.current === value) return;
@@ -1577,7 +1795,7 @@ function ValueDrum<T extends string | number>({
           if (disabled || jumping.current) return;
           const node = listRef.current;
           if (!node || count === 0) return;
-          const raw = Math.round(node.scrollTop / DRUM_ITEM);
+          const raw = rawFromScroll(node.scrollTop);
           const index = looping ? wrapIndex(raw, count) : Math.max(0, Math.min(count - 1, raw));
           emit(index);
           if (looping && (raw < count || raw >= count * 2)) jumpTo(node, index);
@@ -1600,10 +1818,8 @@ function ValueDrum<T extends string | number>({
                 if (disabled) return;
                 onItemClick?.(row.item);
                 emit(row.itemIndex);
-                listRef.current?.scrollTo({
-                  top: topFor(row.itemIndex),
-                  behavior: "smooth",
-                });
+                const node = listRef.current;
+                if (node) jumpTo(node, row.itemIndex);
               }}
             >
               {label(row.item)}
@@ -1664,6 +1880,88 @@ function rangeInts(from: number, to: number): number[] {
   return list;
 }
 
+function periodRowHint(
+  period: DayPeriod,
+  interestId: string,
+  spheres: Interest[],
+): string {
+  const others = period.shares
+    .filter((share) => share.interestId !== interestId)
+    .map((share) => spheres.find((item) => item.id === share.interestId)?.name)
+    .filter((name): name is string => Boolean(name));
+  const bits: string[] = [];
+  if (others.length > 0) bits.push(`вместе с ${others.join(", ")}`);
+  bits.push(period.source === "timer" ? "секундомер" : "вручную");
+  return bits.join(" · ");
+}
+
+function PeriodListModal({
+  name,
+  dateLabel,
+  periods,
+  interestId,
+  spheres,
+  onClose,
+  onAdd,
+  onPick,
+}: {
+  name: string;
+  dateLabel: string;
+  periods: DayPeriod[];
+  interestId: string;
+  spheres: Interest[];
+  onClose: () => void;
+  onAdd: () => void;
+  onPick: (periodId: string) => void;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal modal-periods"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="period-list-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-body">
+          <h2 id="period-list-title">{name}</h2>
+          <p>{dateLabel}</p>
+          {periods.length === 0 ? (
+            <p>Пока нет записей за этот день. Можно указать время вручную.</p>
+          ) : (
+            <ul className="period-list">
+              {periods.map((period) => {
+                const share = periodShareFor(period, interestId);
+                if (!share) return null;
+                return (
+                  <li key={period.id}>
+                    <button
+                      type="button"
+                      className="period-row"
+                      onClick={() => onPick(period.id)}
+                    >
+                      <strong>{formatMinutes(share.minutes)}</strong>
+                      <span>{periodRowHint(period, interestId, spheres)}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="pill ghost" onClick={onClose}>
+            Закрыть
+          </button>
+          <button type="button" className="pill" onClick={onAdd}>
+            Добавить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TimeEditModal({
   name,
   dateLabel,
@@ -1694,12 +1992,12 @@ function TimeEditModal({
     return rangeInts(start, end);
   }, [hours, minH, maxH, minMinutes, cap]);
   const [mins, setMins] = useState(() => minutes % HOUR_MINUTES);
+  const hourRead = useRef<(() => number) | null>(null);
+  const minRead = useRef<(() => number) | null>(null);
 
   useEffect(() => {
     if (!minuteItems.includes(mins)) setMins(minuteItems[0] ?? 0);
   }, [minuteItems, mins]);
-
-  const draft = hours * HOUR_MINUTES + mins;
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
@@ -1720,6 +2018,7 @@ function TimeEditModal({
                 value={hours}
                 loop
                 ariaLabel="Часы"
+                readRef={hourRead}
                 onChange={setHours}
               />
               <span>ч</span>
@@ -1734,6 +2033,7 @@ function TimeEditModal({
                 loop
                 ariaLabel="Минуты"
                 format={(item) => String(item).padStart(2, "0")}
+                readRef={minRead}
                 onChange={setMins}
               />
               <span>мин</span>
@@ -1744,7 +2044,15 @@ function TimeEditModal({
           <button type="button" className="pill ghost" onClick={onCancel}>
             Отмена
           </button>
-          <button type="button" className="pill" onClick={() => onSave(draft)}>
+          <button
+            type="button"
+            className="pill"
+            onClick={() => {
+              const nextHours = hourRead.current?.() ?? hours;
+              const nextMins = minRead.current?.() ?? mins;
+              onSave(nextHours * HOUR_MINUTES + nextMins);
+            }}
+          >
             Готово
           </button>
         </div>
