@@ -583,6 +583,15 @@ export function isActualByDate(value: unknown): value is Record<DateKey, Interes
   return Object.values(value as Record<string, unknown>).every((items) => isInterestArray(items));
 }
 
+function recoverActualByDate(value: unknown): Record<DateKey, Interest[]> {
+  if (!value || typeof value !== "object") return {};
+  const next: Record<DateKey, Interest[]> = {};
+  for (const [key, items] of Object.entries(value as Record<string, unknown>)) {
+    if (isInterestArray(items)) next[key] = items.map((item) => migrateInterest(item));
+  }
+  return next;
+}
+
 export function isAppPersist(value: unknown): value is AppPersist {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -629,15 +638,32 @@ export function parseBackup(value: unknown): AppPersist | null {
   if (isAppPersist(value)) return sanitizePersist(value);
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
+  const runningTimer =
+    record.runningTimer == null || isRunningTimer(record.runningTimer)
+      ? record.runningTimer ?? null
+      : null;
+  const actualByDate = isActualByDate(record.actualByDate)
+    ? record.actualByDate
+    : recoverActualByDate(record.actualByDate);
   const loose = {
     feelWeek: record.feelWeek,
-    actualByDate: record.actualByDate ?? {},
-    runningTimer: record.runningTimer ?? null,
+    actualByDate,
+    runningTimer,
     feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
     feelSkipped: record.feelSkipped === true,
     introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
   };
   if (isAppPersist(loose)) return sanitizePersist(loose);
+  if (isWeekPlan(record.feelWeek)) {
+    return {
+      feelWeek: sanitizeWeek(record.feelWeek),
+      actualByDate,
+      runningTimer,
+      feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
+      feelSkipped: record.feelSkipped === true,
+      introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
+    };
+  }
   if (isWeekPlan(value)) {
     return {
       feelWeek: sanitizeWeek(value),

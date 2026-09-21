@@ -75,35 +75,7 @@ type ToastItem = {
   body: string;
 };
 
-function loadStore(): AppPersist {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw);
-      const backup = parseBackup(parsed);
-      if (backup) return backup;
-    }
-  } catch {
-    /* keep looking */
-  }
-  try {
-    const legacy = localStorage.getItem(LEGACY_KEY);
-    if (legacy) {
-      const parsed: unknown = JSON.parse(legacy);
-      if (isWeekPlan(parsed)) {
-        return {
-          feelWeek: sanitizeWeek(parsed),
-          actualByDate: {},
-          runningTimer: null,
-          feelConfirmed: true,
-          feelSkipped: false,
-          introSeen: false,
-        };
-      }
-    }
-  } catch {
-    /* keep default */
-  }
+function emptyStore(): AppPersist {
   return {
     feelWeek: defaultWeek(),
     actualByDate: {},
@@ -112,6 +84,61 @@ function loadStore(): AppPersist {
     feelSkipped: false,
     introSeen: false,
   };
+}
+
+function writeStore(store: AppPersist): boolean {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type BootResult = {
+  store: AppPersist;
+  allowWrite: boolean;
+  hadCorrupt: boolean;
+};
+
+function readBoot(): BootResult {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw != null && raw !== "") {
+      try {
+        const backup = parseBackup(JSON.parse(raw) as unknown);
+        if (backup) return { store: backup, allowWrite: true, hadCorrupt: false };
+      } catch {
+        /* unreadable v8 */
+      }
+      return { store: emptyStore(), allowWrite: false, hadCorrupt: true };
+    }
+  } catch {
+    return { store: emptyStore(), allowWrite: false, hadCorrupt: true };
+  }
+  try {
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy) {
+      const parsed: unknown = JSON.parse(legacy);
+      if (isWeekPlan(parsed)) {
+        return {
+          store: {
+            feelWeek: sanitizeWeek(parsed),
+            actualByDate: {},
+            runningTimer: null,
+            feelConfirmed: true,
+            feelSkipped: false,
+            introSeen: false,
+          },
+          allowWrite: true,
+          hadCorrupt: false,
+        };
+      }
+    }
+  } catch {
+    /* first run */
+  }
+  return { store: emptyStore(), allowWrite: true, hadCorrupt: false };
 }
 
 function useMediaQuery(query: string): boolean {
@@ -143,7 +170,12 @@ function useTodayKey(): DateKey {
 }
 
 export default function App() {
-  const [store, setStore] = useState<AppPersist>(loadStore);
+  const boot = useRef<BootResult | null>(null);
+  if (boot.current == null) boot.current = readBoot();
+  const allowWrite = useRef(boot.current.allowWrite);
+  const [store, setStore] = useState<AppPersist>(boot.current.store);
+  const storeRef = useRef(store);
+  storeRef.current = store;
   const [pickedDayId, setPickedDayId] = useState<DayId>(todayDayId);
   const [pickedDateKey, setPickedDateKey] = useState<DateKey>(todayDateKey);
   const [mode, setMode] = useState<"feel" | "fact">(
@@ -168,8 +200,8 @@ export default function App() {
   const todayKey = useTodayKey();
   const viewMode =
     !store.feelConfirmed ? "feel" : store.feelSkipped ? "fact" : mode;
-  const dayId = isMobile ? dateKeyToDayId(todayKey) : pickedDayId;
-  const viewDateKey = isMobile ? todayKey : pickedDateKey;
+  const viewDateKey = pickedDateKey;
+  const dayId = isMobile ? dateKeyToDayId(viewDateKey) : pickedDayId;
   const weekKeys = useMemo(() => weekDateKeys(parseDateKey(todayKey)), [todayKey]);
 
   const interests =
@@ -177,9 +209,37 @@ export default function App() {
       ? store.feelWeek[dayId]
       : actualDayFor(store.actualByDate, viewDateKey, store.feelWeek);
 
+  function persistNow(next: AppPersist) {
+    if (!allowWrite.current) return;
+    writeStore(next);
+  }
+
+  function commitStore(updater: (prev: AppPersist) => AppPersist) {
+    setStore((prev) => {
+      const next = updater(prev);
+      persistNow(next);
+      return next;
+    });
+  }
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    persistNow(store);
   }, [store]);
+
+  useEffect(() => {
+    function flush() {
+      if (allowWrite.current) writeStore(storeRef.current);
+    }
+    function onVis() {
+      if (document.visibilityState === "hidden") flush();
+    }
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
 
   useEffect(() => {
     if (!store.runningTimer) return;
@@ -223,6 +283,15 @@ export default function App() {
     }, 5200);
   }
 
+  useEffect(() => {
+    if (!boot.current?.hadCorrupt) return;
+    addToast(
+      "danger",
+      "Сейв не открылся",
+      "Старую записку не трогал. Не настраивайте сферы заново — так можно затереть данные, когда чтение починим.",
+    );
+  }, []);
+
   function closeIntro() {
     setIntroOpen(false);
     setStore((prev) => ({ ...prev, introSeen: true }));
@@ -243,12 +312,12 @@ export default function App() {
   }
 
   function confirmFeel() {
-    setStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: false }));
+    commitStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: false }));
     setMode("fact");
   }
 
   function skipFeel() {
-    setStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: true }));
+    commitStore((prev) => ({ ...prev, feelConfirmed: true, feelSkipped: true }));
     setMode("fact");
   }
 
@@ -452,13 +521,13 @@ export default function App() {
       return;
     }
     if (current && current.runningSince == null) {
-      setStore((prev) => ({
+      commitStore((prev) => ({
         ...prev,
         runningTimer: resumeRunningTimer(prev.runningTimer ?? current),
       }));
       return;
     }
-    setStore((prev) => ({
+    commitStore((prev) => ({
       ...prev,
       runningTimer: startRunningTimer(interestId, todayKey),
     }));
@@ -467,7 +536,7 @@ export default function App() {
   function pauseTimer() {
     const current = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
     if (!current || current.runningSince == null) return;
-    setStore((prev) => ({
+    commitStore((prev) => ({
       ...prev,
       runningTimer: pauseRunningTimer(prev.runningTimer ?? current),
     }));
@@ -479,7 +548,7 @@ export default function App() {
     const now = Date.now();
     const minutes = Math.floor(timerElapsedMs(timer, now) / 60_000);
     if (minutes < 1) {
-      setStore((prev) => ({ ...prev, runningTimer: null }));
+      commitStore((prev) => ({ ...prev, runningTimer: null }));
       addToast(
         "warning",
         "Меньше минуты",
@@ -496,7 +565,7 @@ export default function App() {
       timer.interestId,
       chunks,
     );
-    setStore((prev) => ({
+    commitStore((prev) => ({
       ...prev,
       runningTimer: null,
       actualByDate: result.actualByDate,
@@ -563,7 +632,8 @@ export default function App() {
           addToast("danger", "Файл не подошёл", "Это не копия колеса баланса.");
           return;
         }
-        setStore(next);
+        allowWrite.current = true;
+        commitStore(() => next);
         setMode(next.feelConfirmed ? "fact" : "feel");
         addToast("success", "Данные восстановлены", "Копия загружена на это устройство.");
       } catch {
@@ -575,9 +645,9 @@ export default function App() {
 
   function resetView() {
     if (viewMode === "feel") {
-      setStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
+      commitStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
     } else {
-      setStore((prev) => {
+      commitStore((prev) => {
         const next = { ...prev.actualByDate };
         delete next[viewDateKey];
         return { ...prev, actualByDate: next };

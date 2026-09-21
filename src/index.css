@@ -1087,6 +1087,20 @@ tbody td:first-child {
 }
 
 @media (max-width: 720px) {
+  .backup {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .backup-actions {
+    justify-content: stretch;
+  }
+
+  .backup-actions .pill {
+    flex: 1;
+    height: 44px;
+  }
+
   html:has(.page-fit),
   html:has(.page-fit) body,
   html:has(.page-fit) #root {
@@ -1284,7 +1298,6 @@ tbody td:first-child {
 
   .stats,
   .day-tabs,
-  .backup,
   .legend-block,
   .table-panel,
   .map-head,
