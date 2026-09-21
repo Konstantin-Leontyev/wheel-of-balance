@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CX,
   CY,
@@ -50,6 +50,7 @@ import {
   palette,
   parseDateKey,
   polar,
+  primaryMinutes,
   levelValue,
   sanitizeWeek,
   timerElapsedMs,
@@ -75,6 +76,8 @@ type ToastItem = {
   title: string;
   body: string;
 };
+
+type MobileTab = "map" | "timer" | "calendar" | "data";
 
 function emptyStore(): AppPersist {
   return {
@@ -225,9 +228,7 @@ export default function App() {
   const [introOpen, setIntroOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [timeEditId, setTimeEditId] = useState<string | null>(null);
-  const [mobileTab, setMobileTab] = useState<"map" | "timer" | "calendar" | "export" | "import">(
-    "timer",
-  );
+  const [mobileTab, setMobileTab] = useState<MobileTab>("timer");
   const [calCursor, setCalCursor] = useState(() => {
     const date = parseDateKey(todayDateKey());
     return { year: date.getFullYear(), month: date.getMonth() };
@@ -402,15 +403,22 @@ export default function App() {
     ? timerSpheres.find((item) => item.id === running.interestId) ??
       interests.find((item) => item.id === running.interestId)
     : undefined;
+  const runningSecondaryItem = running?.secondaryId
+    ? timerSpheres.find((item) => item.id === running.secondaryId) ??
+      interests.find((item) => item.id === running.secondaryId)
+    : undefined;
   const timerLive = running ? timerElapsedMs(running, now) : 0;
   const timerPaused = running != null && running.runningSince == null;
 
-  function writeDayMinutes(id: string, next: number) {
+  function writeDayMinutes(id: string, next: number, nextAux?: number) {
     const current = interests.find((item) => item.id === id);
-    if (!current || next === current.minutes) return;
+    if (!current) return;
+    const auxMinutes =
+      nextAux == null ? Math.min(current.auxMinutes, next) : Math.min(nextAux, next);
+    if (next === current.minutes && auxMinutes === current.auxMinutes) return;
     const used = dayUsedMinutes(interests);
     const nextInterests = interests.map((item) =>
-      item.id === id ? { ...item, minutes: next } : item,
+      item.id === id ? { ...item, minutes: next, auxMinutes } : item,
     );
     const nextSleep = nextInterests.find((item) => item.locked) ?? nextInterests[0];
     const nextWork = nextInterests.find((item) => item.id === "work");
@@ -440,7 +448,10 @@ export default function App() {
         "Норма рабочего дня — 8 ч (5-й уровень). Дальше часов больше, эффективность падает, баланс нарушается.",
       );
     }
-    if (used < DAY_MINUTES && used - current.minutes + next >= DAY_MINUTES) {
+    if (
+      used < DAY_MINUTES &&
+      used - primaryMinutes(current) + (next - auxMinutes) >= DAY_MINUTES
+    ) {
       addToast(
         "warning",
         "В сутках только 24 часа",
@@ -456,12 +467,14 @@ export default function App() {
     if (!current) return;
     const floor = floorFor(current, viewMode === "fact");
     const used = dayUsedMinutes(interests);
-    const room = Math.max(0, DAY_MINUTES - used + current.minutes);
-    const next = Math.max(
+    const currentPrimary = primaryMinutes(current);
+    const roomPrimary = Math.max(0, DAY_MINUTES - used + currentPrimary);
+    const auxMinutes = Math.min(current.auxMinutes, Math.max(floor, minutes));
+    const nextPrimary = Math.max(
       floor,
-      Math.min(MAX_MINUTES_PER_INTEREST, minutes, room),
+      Math.min(MAX_MINUTES_PER_INTEREST - auxMinutes, roomPrimary, minutes - auxMinutes),
     );
-    writeDayMinutes(id, next);
+    writeDayMinutes(id, nextPrimary + auxMinutes, auxMinutes);
   }
 
   function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
@@ -470,17 +483,18 @@ export default function App() {
     if (!current) return;
     const actual = viewMode === "fact";
     const floor = floorFor(current, actual);
+    const currentPrimary = primaryMinutes(current);
     const room = Math.max(0, DAY_MINUTES - used);
-    const next =
+    const nextPrimary =
       source === "wheel"
-        ? nextWheelMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room)
-        : nextListMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room);
-    if (next == null) {
+        ? nextWheelMinutes(currentPrimary, dir, floor, MAX_MINUTES_PER_INTEREST - current.auxMinutes, room)
+        : nextListMinutes(currentPrimary, dir, floor, MAX_MINUTES_PER_INTEREST - current.auxMinutes, room);
+    if (nextPrimary == null) {
       if (
         !actual &&
         dir < 0 &&
         (current.id === "sleep" || current.locked) &&
-        current.minutes <= floor
+        currentPrimary <= floor
       ) {
         addToast(
           "warning",
@@ -497,7 +511,7 @@ export default function App() {
       }
       return;
     }
-    writeDayMinutes(id, next);
+    writeDayMinutes(id, nextPrimary + current.auxMinutes, current.auxMinutes);
   }
 
   function addInterest() {
@@ -510,7 +524,7 @@ export default function App() {
       .flat()
       .find((item) => item.name === name)?.id;
     const id = existingId ?? `i-${seq}`;
-    const created: Interest = { id, name, locked: false, minutes: 0 };
+    const created: Interest = { id, name, locked: false, minutes: 0, auxMinutes: 0 };
     if (!existingId) setSeq((n) => n + 1);
     setDraft("");
 
@@ -569,7 +583,7 @@ export default function App() {
     }));
   }
 
-  function startTimer(interestId: string) {
+  function startTimer(interestId: string, secondaryId?: string | null) {
     const current = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
     if (current?.runningSince != null) {
       addToast("warning", "Таймер уже идёт", "Поставьте на паузу, если нужно сменить сферу.");
@@ -582,9 +596,16 @@ export default function App() {
       }));
       return;
     }
+    const extra =
+      secondaryId &&
+      secondaryId !== interestId &&
+      !isSleepTimerId(interestId, timerSpheres) &&
+      !isSleepTimerId(secondaryId, timerSpheres)
+        ? secondaryId
+        : null;
     commitStore((prev) => ({
       ...prev,
-      runningTimer: startRunningTimer(interestId, todayKey),
+      runningTimer: startRunningTimer(interestId, todayKey, Date.now(), extra),
     }));
   }
 
@@ -620,11 +641,29 @@ export default function App() {
       timer.interestId,
       chunks,
     );
+    const auxChunks = result.parts
+      .filter((part) => part.added > 0)
+      .map((part) => ({ dateKey: part.dateKey, minutes: part.added }));
+    const aux =
+      timer.secondaryId && auxChunks.length > 0
+        ? applyMinutesByDates(
+            result.actualByDate,
+            store.feelWeek,
+            timer.secondaryId,
+            auxChunks,
+            "auxiliary",
+          )
+        : null;
     commitStore((prev) => ({
       ...prev,
       runningTimer: null,
-      actualByDate: result.actualByDate,
+      actualByDate: aux?.actualByDate ?? result.actualByDate,
     }));
+    const primaryName =
+      template.find((item) => item.id === timer.interestId)?.name ?? "сфера";
+    const secondaryName = timer.secondaryId
+      ? template.find((item) => item.id === timer.secondaryId)?.name
+      : undefined;
     if (result.added === 0) {
       addToast(
         "warning",
@@ -644,6 +683,12 @@ export default function App() {
         result.parts
           .map((part) => `${formatMinutes(part.added)} — ${formatDateTitle(part.dateKey)}`)
           .join(". "),
+      );
+    } else if (secondaryName && (aux?.added ?? 0) > 0) {
+      addToast(
+        "success",
+        "Два занятия",
+        `${formatMinutes(result.added)} — ${primaryName}, рядом ${secondaryName}.`,
       );
     }
   }
@@ -756,11 +801,9 @@ export default function App() {
                 ? "Сферы интересов"
                 : mobileTab === "calendar"
                   ? "Календарь"
-                  : mobileTab === "export"
-                    ? "Выгрузка"
-                    : mobileTab === "import"
-                      ? "Загрузка"
-                      : formatDateTitle(viewDateKey)}
+                  : mobileTab === "data"
+                    ? "Данные"
+                    : formatDateTitle(viewDateKey)}
             </span>
           </div>
           {store.feelConfirmed && mobileTab === "map" ? (
@@ -1011,7 +1054,9 @@ export default function App() {
           dateKey={todayKey}
           spheres={timerSpheres}
           runningId={running?.interestId ?? null}
+          runningSecondaryId={running?.secondaryId ?? null}
           runningLabel={runningItem?.name}
+          runningSecondaryLabel={runningSecondaryItem?.name}
           elapsed={formatElapsed(timerLive)}
           paused={timerPaused}
           onStart={startTimer}
@@ -1020,31 +1065,69 @@ export default function App() {
         />
       ) : null}
 
-      <section
-        className={`backup${mobileTab !== "export" && mobileTab !== "import" ? " tab-hidden" : ""}`}
-      >
+      <section className={`backup${mobileTab !== "data" ? " tab-hidden" : ""}`}>
         <div>
-          <strong>{mobileTab === "import" ? "Загрузка" : "Выгрузка"}</strong>
+          <strong>Данные</strong>
           <p>
-            Обновление сайта само сейв не сотрёт. Файл нужен, если почистите
-            браузер или смените телефон.
+            Данные хранятся на этом устройстве. Обновление сайта сейв не сотрёт.
+            Файл нужен, если почистите браузер или смените телефон.
           </p>
         </div>
         <div className="backup-actions">
-          {mobileTab !== "import" ? (
-            <button type="button" className="pill ghost" onClick={() => void saveBackup()}>
-              Скачать файл
-            </button>
-          ) : null}
-          {mobileTab !== "export" ? (
-            <button
-              type="button"
-              className="pill"
-              onClick={() => fileInput.current?.click()}
-            >
-              Загрузить
-            </button>
-          ) : null}
+          <button type="button" className="pill ghost backup-action" onClick={() => void saveBackup()}>
+            <span className="backup-action-short">Скачать файл</span>
+            <span className="backup-action-full">
+              <span className="backup-action-icon" aria-hidden>
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 5v10M8.4 11.4 12 15l3.6-3.6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  />
+                  <path
+                    d="M6 16.5v2.2h12v-2.2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  />
+                </svg>
+              </span>
+              <span className="backup-action-copy">
+                <strong>Выгрузить копию</strong>
+                <em>Сохранить JSON-файл со всеми записями</em>
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="pill backup-action backup-action-warn"
+            onClick={() => fileInput.current?.click()}
+          >
+            <span className="backup-action-short">Загрузить</span>
+            <span className="backup-action-full">
+              <span className="backup-action-icon" aria-hidden>
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 19V9M8.4 12.6 12 9l3.6 3.6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  />
+                  <path
+                    d="M6 7.5V5.3h12v2.2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  />
+                </svg>
+              </span>
+              <span className="backup-action-copy">
+                <strong>Загрузить копию</strong>
+                <em>Заменит текущие данные из файла. Текущие записи будут перезаписаны.</em>
+              </span>
+            </span>
+          </button>
           <input
             ref={fileInput}
             type="file"
@@ -1248,16 +1331,10 @@ export default function App() {
             onClick={() => setMobileTab("calendar")}
           />
           <TabButton
-            id="export"
-            label="Выгрузка"
-            active={mobileTab === "export"}
-            onClick={() => setMobileTab("export")}
-          />
-          <TabButton
-            id="import"
-            label="Загрузка"
-            active={mobileTab === "import"}
-            onClick={() => setMobileTab("import")}
+            id="data"
+            label="Данные"
+            active={mobileTab === "data"}
+            onClick={() => setMobileTab("data")}
           />
         </nav>
       ) : null}
@@ -1270,7 +1347,9 @@ function TimerPanel({
   dateKey,
   spheres,
   runningId,
+  runningSecondaryId,
   runningLabel,
+  runningSecondaryLabel,
   elapsed,
   paused,
   onStart,
@@ -1281,20 +1360,57 @@ function TimerPanel({
   dateKey: DateKey;
   spheres: Interest[];
   runningId: string | null;
+  runningSecondaryId: string | null;
   runningLabel?: string;
+  runningSecondaryLabel?: string;
   elapsed: string;
   paused: boolean;
-  onStart: (id: string) => void;
+  onStart: (id: string, secondaryId?: string | null) => void;
   onPause: () => void;
   onStop: () => void;
 }) {
   const fallbackId = spheres.find((item) => item.id === "work")?.id ?? spheres[0]?.id ?? "";
   const [userPickedId, setUserPickedId] = useState(fallbackId);
-  const pickedId =
-    runningId ??
-    (spheres.some((item) => item.id === userPickedId) ? userPickedId : fallbackId);
-  const selected = spheres.find((item) => item.id === pickedId);
+  const [primaryId, setPrimaryId] = useState<string | null>(null);
+  const [secondaryId, setSecondaryId] = useState<string | null>(null);
+  const pickedId = spheres.some((item) => item.id === userPickedId)
+    ? userPickedId
+    : fallbackId;
+  const startPrimary = primaryId ?? pickedId;
+  const startSecondary = primaryId ? secondaryId : null;
+  const selected = spheres.find((item) => item.id === startPrimary);
   const locked = runningId != null;
+  const pairLabel = [runningLabel, runningSecondaryLabel].filter(Boolean).join(" + ");
+
+  useEffect(() => {
+    if (!runningId) return;
+    setPrimaryId(runningId);
+    setSecondaryId(runningSecondaryId);
+  }, [runningId, runningSecondaryId]);
+
+  function toggleMark(id: string) {
+    if (locked) return;
+    setUserPickedId(id);
+    if (id === primaryId) {
+      setPrimaryId(secondaryId);
+      setSecondaryId(null);
+      return;
+    }
+    if (id === secondaryId) {
+      setSecondaryId(null);
+      return;
+    }
+    if (!primaryId) {
+      setPrimaryId(id);
+      return;
+    }
+    if (isSleepTimerId(id, spheres) || isSleepTimerId(primaryId, spheres)) {
+      setPrimaryId(id);
+      setSecondaryId(null);
+      return;
+    }
+    setSecondaryId(id);
+  }
 
   return (
     <section className={`timer${className ? ` ${className}` : ""}`} aria-label="Секундомер">
@@ -1305,16 +1421,19 @@ function TimerPanel({
             spheres={spheres}
             value={pickedId}
             disabled={locked}
+            primaryId={runningId ?? primaryId}
+            secondaryId={runningId ? runningSecondaryId : secondaryId}
             onChange={setUserPickedId}
+            onToggle={toggleMark}
           />
         </div>
         <p className="timer-time" aria-live="polite">
           {elapsed}
         </p>
         <div className="timer-below">
-          {runningId && runningLabel ? (
+          {runningId && pairLabel ? (
             <p className="timer-running">
-              {paused ? `Пауза: ${runningLabel}` : `Идёт: ${runningLabel}`}
+              {paused ? `Пауза: ${pairLabel}` : `Идёт: ${pairLabel}`}
             </p>
           ) : null}
           <div className="timer-actions">
@@ -1327,7 +1446,7 @@ function TimerPanel({
                 type="button"
                 className="pill timer-btn"
                 disabled={!selected}
-                onClick={() => selected && onStart(selected.id)}
+                onClick={() => selected && onStart(selected.id, startSecondary)}
               >
                 Старт
               </button>
@@ -1359,15 +1478,19 @@ function ValueDrum<T extends string | number>({
   loop = false,
   ariaLabel,
   format,
+  mark,
   onChange,
+  onItemClick,
 }: {
   items: readonly T[];
   value: T;
   disabled?: boolean;
   loop?: boolean;
   ariaLabel: string;
-  format?: (item: T) => string;
+  format?: (item: T) => ReactNode;
+  mark?: (item: T) => "primary" | "secondary" | null;
   onChange: (value: T) => void;
+  onItemClick?: (value: T) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const snapTimer = useRef<number | null>(null);
@@ -1435,7 +1558,7 @@ function ValueDrum<T extends string | number>({
     else node.scrollTo({ top: topFor(index), behavior: "smooth" });
   }
 
-  const rows = [];
+  const rows: Array<{ item: T; itemIndex: number; copy: number; key: string }> = [];
   for (let copy = 0; copy < copies; copy += 1) {
     items.forEach((item, itemIndex) => {
       rows.push({ item, itemIndex, copy, key: `${copy}:${itemIndex}:${String(item)}` });
@@ -1463,24 +1586,40 @@ function ValueDrum<T extends string | number>({
         }}
       >
         {looping ? null : <div className="drum-pad" />}
-        {rows.map((row) => (
-          <button
-            key={row.key}
-            type="button"
-            className={`drum-item${row.item === value ? " active" : ""}`}
-            disabled={disabled}
-            onClick={() => {
-              if (disabled) return;
-              emit(row.itemIndex);
-              listRef.current?.scrollTo({
-                top: topFor(row.itemIndex),
-                behavior: "smooth",
-              });
-            }}
-          >
-            {label(row.item)}
-          </button>
-        ))}
+        {rows.map((row) => {
+          const role = mark?.(row.item) ?? null;
+          return (
+            <button
+              key={row.key}
+              type="button"
+              className={`drum-item${row.item === value ? " active" : ""}${
+                role ? ` drum-item-${role}` : ""
+              }`}
+              disabled={disabled}
+              onClick={() => {
+                if (disabled) return;
+                onItemClick?.(row.item);
+                emit(row.itemIndex);
+                listRef.current?.scrollTo({
+                  top: topFor(row.itemIndex),
+                  behavior: "smooth",
+                });
+              }}
+            >
+              {label(row.item)}
+              {role === "primary" ? (
+                <span className="drum-mark" aria-hidden>
+                  ✓
+                </span>
+              ) : null}
+              {role === "secondary" ? (
+                <span className="drum-mark drum-mark-double" aria-hidden>
+                  ✓✓
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
         {looping ? null : <div className="drum-pad" />}
       </div>
     </div>
@@ -1491,12 +1630,18 @@ function SphereDrum({
   spheres,
   value,
   disabled,
+  primaryId,
+  secondaryId,
   onChange,
+  onToggle,
 }: {
   spheres: Interest[];
   value: string;
   disabled: boolean;
+  primaryId: string | null;
+  secondaryId: string | null;
   onChange: (id: string) => void;
+  onToggle: (id: string) => void;
 }) {
   return (
     <ValueDrum
@@ -1506,7 +1651,9 @@ function SphereDrum({
       loop
       ariaLabel="Сфера"
       format={(id) => spheres.find((item) => item.id === id)?.name ?? id}
+      mark={(id) => (id === primaryId ? "primary" : id === secondaryId ? "secondary" : null)}
       onChange={onChange}
+      onItemClick={onToggle}
     />
   );
 }
@@ -1670,7 +1817,7 @@ function TabButton({
   active,
   onClick,
 }: {
-  id: "map" | "timer" | "calendar" | "export" | "import";
+  id: MobileTab;
   label: string;
   active: boolean;
   onClick: () => void;
@@ -1687,7 +1834,7 @@ function TabButton({
   );
 }
 
-function TabIcon({ id }: { id: "map" | "timer" | "calendar" | "export" | "import" }) {
+function TabIcon({ id }: { id: MobileTab }) {
   if (id === "map") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden>
@@ -1714,18 +1861,21 @@ function TabIcon({ id }: { id: "map" | "timer" | "calendar" | "export" | "import
       </svg>
     );
   }
-  if (id === "export") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden>
-        <path d="M12 5v10M8.4 8.4 12 5l3.6 3.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M6 16.5v2.2h12v-2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      </svg>
-    );
-  }
   return (
     <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M12 19V9M8.4 15.6 12 19l3.6-3.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M6 7.5V5.3h12v2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <ellipse cx="12" cy="6.5" rx="7" ry="2.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M5 6.5v11c0 1.35 3.13 2.4 7 2.4s7-1.05 7-2.4v-11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M5 12c0 1.35 3.13 2.4 7 2.4s7-1.05 7-2.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
     </svg>
   );
 }
@@ -2253,6 +2403,32 @@ function InterestEditor({
 }
 
 function InterestTable({ interests }: { interests: Interest[] }) {
+  const rows = interests.flatMap((item) => {
+    const primary = primaryMinutes(item);
+    const list: Array<{
+      key: string;
+      item: Interest;
+      minutes: number;
+      role: "основное" | "вспомогательное";
+    }> = [
+      {
+        key: `${item.id}-primary`,
+        item,
+        minutes: primary,
+        role: "основное",
+      },
+    ];
+    if (item.auxMinutes > 0) {
+      list.push({
+        key: `${item.id}-aux`,
+        item,
+        minutes: item.auxMinutes,
+        role: "вспомогательное",
+      });
+    }
+    return list;
+  });
+
   return (
     <div className="table-wrap">
       <table>
@@ -2266,17 +2442,20 @@ function InterestTable({ interests }: { interests: Interest[] }) {
           </tr>
         </thead>
         <tbody>
-          {interests.map((item) => (
-            <tr key={item.id}>
-              <td style={{ borderLeft: `3px solid ${weekToneForInterest(item)}` }}>
-                {item.name}
-              </td>
-              <td>{weekLevelValue(item.minutes)}</td>
-              <td>{formatMinutes(item.minutes)}</td>
-              <td>{formatMinutes(dailyMinutes(item.minutes))}</td>
-              <td>{item.locked ? "обязательный" : "свой"}</td>
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const slice = { ...row.item, minutes: row.minutes };
+            return (
+              <tr key={row.key}>
+                <td style={{ borderLeft: `3px solid ${weekToneForInterest(slice)}` }}>
+                  {row.item.name}
+                </td>
+                <td>{weekLevelValue(row.minutes)}</td>
+                <td>{formatMinutes(row.minutes)}</td>
+                <td>{formatMinutes(dailyMinutes(row.minutes))}</td>
+                <td>{row.role}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

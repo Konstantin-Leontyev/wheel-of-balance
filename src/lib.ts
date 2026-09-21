@@ -42,7 +42,20 @@ export type Interest = {
   name: string;
   locked: boolean;
   minutes: number;
+  auxMinutes: number;
 };
+
+export type MinuteRole = "primary" | "auxiliary";
+
+export function primaryMinutes(item: Interest): number {
+  return Math.max(0, item.minutes - Math.max(0, item.auxMinutes));
+}
+
+export function clampInterest(item: Interest): Interest {
+  const minutes = Math.max(0, item.minutes);
+  const auxMinutes = Math.max(0, Math.min(item.auxMinutes, minutes));
+  return { ...item, minutes, auxMinutes };
+}
 
 export const DAYS = [
   { id: "mon", short: "Пн", workday: true },
@@ -87,6 +100,7 @@ export function defaultDayInterests(workday: boolean): Interest[] {
             ? hours(8)
             : 0
           : 0,
+    auxMinutes: 0,
   }));
 }
 
@@ -112,6 +126,7 @@ export type TimerRun = {
 export type RunningTimer = {
   interestId: string;
   dateKey: DateKey;
+  secondaryId: string | null;
   accumulatedMs: number;
   runningSince: number | null;
   runs: TimerRun[];
@@ -203,6 +218,7 @@ function sanitizeRuns(value: unknown): TimerRun[] {
 export function normalizeRunningTimer(value: {
   interestId: string;
   dateKey: DateKey;
+  secondaryId?: string | null;
   accumulatedMs?: number;
   runningSince?: number | null;
   startedAt?: number;
@@ -210,10 +226,15 @@ export function normalizeRunningTimer(value: {
 }): RunningTimer {
   const runs = sanitizeRuns(value.runs);
   const runMs = runs.reduce((sum, run) => sum + (run.endedAt - run.startedAt), 0);
+  const secondaryId =
+    typeof value.secondaryId === "string" && value.secondaryId !== value.interestId
+      ? value.secondaryId
+      : null;
   if (typeof value.accumulatedMs === "number") {
     return {
       interestId: value.interestId,
       dateKey: value.dateKey,
+      secondaryId,
       accumulatedMs: runs.length > 0 ? runMs : value.accumulatedMs,
       runningSince: typeof value.runningSince === "number" ? value.runningSince : null,
       runs,
@@ -222,6 +243,7 @@ export function normalizeRunningTimer(value: {
   return {
     interestId: value.interestId,
     dateKey: value.dateKey,
+    secondaryId,
     accumulatedMs: runMs,
     runningSince: typeof value.startedAt === "number" ? value.startedAt : null,
     runs,
@@ -240,10 +262,12 @@ export function startRunningTimer(
   interestId: string,
   dateKey: DateKey,
   now = Date.now(),
+  secondaryId: string | null = null,
 ): RunningTimer {
   return {
     interestId,
     dateKey,
+    secondaryId: secondaryId && secondaryId !== interestId ? secondaryId : null,
     accumulatedMs: 0,
     runningSince: now,
     runs: [],
@@ -353,6 +377,7 @@ export function applyMinutesByDates(
   feelWeek: WeekPlan,
   interestId: string,
   chunks: Array<{ dateKey: DateKey; minutes: number }>,
+  role: MinuteRole = "primary",
 ): {
   actualByDate: Record<DateKey, Interest[]>;
   added: number;
@@ -365,7 +390,7 @@ export function applyMinutesByDates(
   for (const chunk of chunks) {
     if (chunk.minutes <= 0) continue;
     const day = actualDayFor(next, chunk.dateKey, feelWeek);
-    const result = addActualMinutes(day, interestId, chunk.minutes);
+    const result = addActualMinutes(day, interestId, chunk.minutes, role);
     next = { ...next, [chunk.dateKey]: result.items };
     added += result.added;
     parts.push({ dateKey: chunk.dateKey, minutes: chunk.minutes, added: result.added });
@@ -406,7 +431,7 @@ export function isSleepInterest(item: Interest): boolean {
 }
 
 export function emptyActualDay(template: Interest[]): Interest[] {
-  return template.map((item) => ({ ...item, minutes: 0 }));
+  return template.map((item) => ({ ...item, minutes: 0, auxMinutes: 0 }));
 }
 
 export function actualDayFor(
@@ -424,17 +449,24 @@ export function addActualMinutes(
   items: Interest[],
   interestId: string,
   addMinutes: number,
+  role: MinuteRole = "primary",
 ): { items: Interest[]; added: number } {
   if (addMinutes <= 0) return { items, added: 0 };
   const current = items.find((item) => item.id === interestId);
   if (!current) return { items, added: 0 };
-  const roomDay = Math.max(0, DAY_MINUTES - dayUsedMinutes(items));
   const roomItem = Math.max(0, MAX_MINUTES_PER_INTEREST - current.minutes);
+  const roomDay =
+    role === "auxiliary" ? roomItem : Math.max(0, DAY_MINUTES - dayUsedMinutes(items));
   const added = Math.min(addMinutes, roomDay, roomItem);
   if (added <= 0) return { items, added: 0 };
-  const next = items.map((item) =>
-    item.id === interestId ? { ...item, minutes: item.minutes + added } : item,
-  );
+  const next = items.map((item) => {
+    if (item.id !== interestId) return item;
+    return clampInterest({
+      ...item,
+      minutes: item.minutes + added,
+      auxMinutes: item.auxMinutes + (role === "auxiliary" ? added : 0),
+    });
+  });
   return { items: clampDayMinutes(next), added };
 }
 
@@ -500,7 +532,7 @@ export function nextListMinutes(
 }
 
 export function dayUsedMinutes(items: Interest[]): number {
-  return items.reduce((sum, item) => sum + item.minutes, 0);
+  return items.reduce((sum, item) => sum + primaryMinutes(item), 0);
 }
 
 export function clampDayMinutes(items: Interest[]): Interest[] {
@@ -508,10 +540,10 @@ export function clampDayMinutes(items: Interest[]): Interest[] {
   if (overflow <= 0) return items;
   return items.map((item) => {
     if (overflow <= 0) return item;
-    const reducible = Math.max(0, item.minutes - floorFor(item));
+    const reducible = Math.max(0, primaryMinutes(item) - floorFor(item));
     const cut = Math.min(reducible, overflow);
     overflow -= cut;
-    return cut === 0 ? item : { ...item, minutes: item.minutes - cut };
+    return cut === 0 ? item : clampInterest({ ...item, minutes: item.minutes - cut });
   });
 }
 
@@ -540,11 +572,12 @@ export function mergeInterestLists(lists: Interest[][]): Interest[] {
     for (const item of items) {
       const prev = map.get(item.id);
       if (!prev) {
-        map.set(item.id, { ...item });
+        map.set(item.id, clampInterest({ ...item, auxMinutes: item.auxMinutes ?? 0 }));
       } else {
         map.set(item.id, {
           ...prev,
           minutes: prev.minutes + item.minutes,
+          auxMinutes: prev.auxMinutes + (item.auxMinutes ?? 0),
           locked: prev.locked || item.locked,
         });
       }
@@ -792,6 +825,7 @@ export function migrateInterest(item: {
   name: string;
   locked: boolean;
   minutes?: number;
+  auxMinutes?: number;
   steps?: number;
 }): Interest {
   let minutes =
@@ -808,7 +842,8 @@ export function migrateInterest(item: {
     name = "Рефлексия";
   }
   if (NAME_MIGRATIONS[name]) name = NAME_MIGRATIONS[name];
-  return { id, name, locked: item.locked, minutes };
+  const auxMinutes = typeof item.auxMinutes === "number" ? item.auxMinutes : 0;
+  return clampInterest({ id, name, locked: item.locked, minutes, auxMinutes });
 }
 
 export function isInterestArray(value: unknown): value is Array<{

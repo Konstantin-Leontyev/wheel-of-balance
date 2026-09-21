@@ -82,6 +82,10 @@ h3 {
   gap: 8px;
 }
 
+.backup-action-full {
+  display: none;
+}
+
 .feel-banner {
   display: flex;
   flex-wrap: wrap;
@@ -180,12 +184,29 @@ h3 {
 }
 
 .drum-item {
+  position: relative;
   width: 100%;
   border: 0;
   background: transparent;
   color: #9a938b;
   font-size: 18px;
   cursor: pointer;
+}
+
+.drum-mark {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #2a9a6a;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.08em;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.drum-mark-double {
+  letter-spacing: -0.12em;
 }
 
 .drum-item.active {
@@ -1163,15 +1184,96 @@ tbody td:first-child {
   .backup {
     flex-direction: column;
     align-items: stretch;
+    gap: 16px;
+    padding: 8px 0 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .backup > div > strong {
+    display: none;
+  }
+
+  .backup p {
+    margin: 0;
+    font-size: 14px;
   }
 
   .backup-actions {
-    justify-content: stretch;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 10px;
   }
 
-  .backup-actions .pill {
-    flex: 1;
-    height: 44px;
+  .backup-action-short {
+    display: none;
+  }
+
+  .backup-action.pill,
+  .backup-action.pill.ghost {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    width: 100%;
+    height: auto;
+    padding: 14px 16px;
+    border: 1px solid #d9d2c8;
+    border-radius: 12px;
+    background: #fffcf7;
+    color: #1c1a17;
+    text-align: left;
+  }
+
+  .backup-action-full {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .backup-action-icon {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: #e7f3ec;
+    color: #2a9a6a;
+  }
+
+  .backup-action-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .backup-action-warn .backup-action-icon {
+    background: #f6e8e8;
+    color: #c24545;
+  }
+
+  .backup-action-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: "Avenir Next", "Segoe UI", sans-serif;
+  }
+
+  .backup-action-copy strong {
+    font-size: 15px;
+    line-height: 1.25;
+  }
+
+  .backup-action-copy em {
+    font-style: normal;
+    color: #6b6560;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .backup-action-warn .backup-action-copy em {
+    color: #c24545;
   }
 
   html:has(.shell-fit),
