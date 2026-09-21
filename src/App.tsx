@@ -5,6 +5,7 @@ import {
   DAYS,
   DAY_HOURS,
   DAY_MINUTES,
+  HOUR_MINUTES,
   LABEL_R,
   LIST_STEP_DAILY_MINUTES,
   MAX_INTERESTS,
@@ -185,6 +186,7 @@ export default function App() {
   const [seq, setSeq] = useState(20);
   const [introOpen, setIntroOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [timeEditId, setTimeEditId] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"map" | "timer" | "calendar" | "export" | "import">(
     "timer",
   );
@@ -256,21 +258,18 @@ export default function App() {
   }, [store.runningTimer]);
 
   useEffect(() => {
-    if (!introOpen && !resetOpen) return;
+    if (!introOpen && !resetOpen && !timeEditId) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (resetOpen) setResetOpen(false);
+      if (timeEditId) setTimeEditId(null);
+      else if (resetOpen) setResetOpen(false);
       else closeIntro();
     }
     window.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
     };
-  }, [introOpen, resetOpen]);
+  }, [introOpen, resetOpen, timeEditId]);
 
   function addToast(tone: ToastItem["tone"], title: string, body: string) {
     const id = ++toastSeq.current;
@@ -357,52 +356,10 @@ export default function App() {
   const timerLive = running ? timerElapsedMs(running, now) : 0;
   const timerPaused = running != null && running.runningSince == null;
 
-  function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
-    if (viewMode === "fact") {
-      const current = interests.find((item) => item.id === id);
-      if (current && !isSleepInterest(current)) {
-        addToast(
-          "warning",
-          "Время — с таймера",
-          "Для этой сферы засеките время сверху. Руками правится только сон.",
-        );
-        return;
-      }
-    }
-
-    const used = dayUsedMinutes(interests);
+  function writeDayMinutes(id: string, next: number) {
     const current = interests.find((item) => item.id === id);
-    if (!current) return;
-    const actual = viewMode === "fact";
-    const floor = floorFor(current, actual);
-    const room = Math.max(0, DAY_MINUTES - used);
-    const next =
-      source === "wheel"
-        ? nextWheelMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room)
-        : nextListMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room);
-    if (next == null) {
-      if (
-        !actual &&
-        dir < 0 &&
-        (current.id === "sleep" || current.locked) &&
-        current.minutes <= floor
-      ) {
-        addToast(
-          "warning",
-          "Сон нельзя снизить",
-          "Ниже 4 ч в сутки опустить сон нельзя.",
-        );
-      }
-      if (dir > 0 && room < (source === "wheel" ? WHEEL_STEP_MINUTES : LIST_STEP_DAILY_MINUTES)) {
-        addToast(
-          "warning",
-          "В сутках только 24 часа",
-          "В этом дне больше нельзя добавить время. Чтобы поднять одну сферу, сначала уберите часы у другой.",
-        );
-      }
-      return;
-    }
-
+    if (!current || next === current.minutes) return;
+    const used = dayUsedMinutes(interests);
     const nextInterests = interests.map((item) =>
       item.id === id ? { ...item, minutes: next } : item,
     );
@@ -443,6 +400,55 @@ export default function App() {
     }
     if (viewMode === "feel") setFeelDay(nextInterests);
     else setActualDay(viewDateKey, nextInterests);
+  }
+
+  function setItemMinutes(id: string, minutes: number) {
+    const current = interests.find((item) => item.id === id);
+    if (!current) return;
+    const floor = floorFor(current, viewMode === "fact");
+    const used = dayUsedMinutes(interests);
+    const room = Math.max(0, DAY_MINUTES - used + current.minutes);
+    const next = Math.max(
+      floor,
+      Math.min(MAX_MINUTES_PER_INTEREST, minutes, room),
+    );
+    writeDayMinutes(id, next);
+  }
+
+  function bump(id: string, dir: 1 | -1, source: "wheel" | "list") {
+    const used = dayUsedMinutes(interests);
+    const current = interests.find((item) => item.id === id);
+    if (!current) return;
+    const actual = viewMode === "fact";
+    const floor = floorFor(current, actual);
+    const room = Math.max(0, DAY_MINUTES - used);
+    const next =
+      source === "wheel"
+        ? nextWheelMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room)
+        : nextListMinutes(current.minutes, dir, floor, MAX_MINUTES_PER_INTEREST, room);
+    if (next == null) {
+      if (
+        !actual &&
+        dir < 0 &&
+        (current.id === "sleep" || current.locked) &&
+        current.minutes <= floor
+      ) {
+        addToast(
+          "warning",
+          "Сон нельзя снизить",
+          "Ниже 4 ч в сутки опустить сон нельзя.",
+        );
+      }
+      if (dir > 0 && room < (source === "wheel" ? WHEEL_STEP_MINUTES : LIST_STEP_DAILY_MINUTES)) {
+        addToast(
+          "warning",
+          "В сутках только 24 часа",
+          "В этом дне больше нельзя добавить время. Чтобы поднять одну сферу, сначала уберите часы у другой.",
+        );
+      }
+      return;
+    }
+    writeDayMinutes(id, next);
   }
 
   function addInterest() {
@@ -666,8 +672,12 @@ export default function App() {
   const lockViewport =
     store.feelConfirmed && (mobileTab === "timer" || mobileTab === "map");
   const showToolbar = !store.feelConfirmed || mobileTab !== "timer";
+  const timeEdit = timeEditId
+    ? interests.find((item) => item.id === timeEditId)
+    : undefined;
 
   return (
+    <>
     <div
       className={`page${lockViewport ? " page-fit" : ""}${
         store.feelConfirmed && mobileTab === "timer" ? " page-timer" : ""
@@ -849,6 +859,24 @@ export default function App() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {timeEdit ? (
+        <TimeEditModal
+          name={timeEdit.name}
+          dateLabel={formatDateTitle(viewDateKey)}
+          minutes={timeEdit.minutes}
+          minMinutes={floorFor(timeEdit, viewMode === "fact")}
+          maxMinutes={Math.min(
+            MAX_MINUTES_PER_INTEREST,
+            timeEdit.minutes + dayRoom,
+          )}
+          onCancel={() => setTimeEditId(null)}
+          onSave={(minutes) => {
+            setItemMinutes(timeEdit.id, minutes);
+            setTimeEditId(null);
+          }}
+        />
       ) : null}
 
       {resetOpen ? (
@@ -1069,6 +1097,7 @@ export default function App() {
                 timerOnly={viewMode === "fact"}
                 onBump={bump}
                 onRename={renameInterest}
+                onEditTime={setTimeEditId}
               />
             </div>
             <div className="legend-block">
@@ -1119,6 +1148,21 @@ export default function App() {
         <InterestTable interests={weeklyInterests} />
       </section>
 
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((toast) => (
+          <aside
+            key={toast.id}
+            className={`toast ${toast.tone}`}
+            onClick={() =>
+              setToasts((prev) => prev.filter((item) => item.id !== toast.id))
+            }
+          >
+            <strong>{toast.title}</strong>
+            <p>{toast.body}</p>
+          </aside>
+        ))}
+      </div>
+    </div>
       {store.feelConfirmed ? (
         <nav className="tabbar" aria-label="Разделы">
           <TabButton
@@ -1153,22 +1197,7 @@ export default function App() {
           />
         </nav>
       ) : null}
-
-      <div className="toast-stack" aria-live="polite">
-        {toasts.map((toast) => (
-          <aside
-            key={toast.id}
-            className={`toast ${toast.tone}`}
-            onClick={() =>
-              setToasts((prev) => prev.filter((item) => item.id !== toast.id))
-            }
-          >
-            <strong>{toast.title}</strong>
-            <p>{toast.body}</p>
-          </aside>
-        ))}
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -1253,40 +1282,44 @@ function TimerPanel({
 
 const DRUM_ITEM = 44;
 
-function SphereDrum({
-  spheres,
+function ValueDrum<T extends string | number>({
+  items,
   value,
-  disabled,
+  disabled = false,
+  ariaLabel,
+  format,
   onChange,
 }: {
-  spheres: Interest[];
-  value: string;
-  disabled: boolean;
-  onChange: (id: string) => void;
+  items: readonly T[];
+  value: T;
+  disabled?: boolean;
+  ariaLabel: string;
+  format?: (item: T) => string;
+  onChange: (value: T) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const snapTimer = useRef<number | null>(null);
-
-  const sphereIds = spheres.map((item) => item.id).join("|");
+  const key = items.join("|");
+  const label = format ?? ((item: T) => String(item));
 
   useEffect(() => {
-    const index = Math.max(0, spheres.findIndex((item) => item.id === value));
+    const index = Math.max(0, items.indexOf(value));
     const node = listRef.current;
     if (!node) return;
     node.scrollTop = index * DRUM_ITEM;
-  }, [value, sphereIds, spheres]);
+  }, [value, key]);
 
   function snapTo(index: number) {
     const node = listRef.current;
     if (!node) return;
-    const nextIndex = Math.max(0, Math.min(spheres.length - 1, index));
-    const next = spheres[nextIndex];
-    if (next && next.id !== value) onChange(next.id);
+    const nextIndex = Math.max(0, Math.min(items.length - 1, index));
+    const next = items[nextIndex];
+    if (next !== undefined && next !== value) onChange(next);
     node.scrollTo({ top: nextIndex * DRUM_ITEM, behavior: "smooth" });
   }
 
   return (
-    <div className={`drum${disabled ? " locked" : ""}`} aria-label="Сфера">
+    <div className={`drum${disabled ? " locked" : ""}`} aria-label={ariaLabel}>
       <div className="drum-shade drum-shade-top" />
       <div className="drum-shade drum-shade-bottom" />
       <div className="drum-band" />
@@ -1298,30 +1331,146 @@ function SphereDrum({
           const node = listRef.current;
           if (!node) return;
           const index = Math.round(node.scrollTop / DRUM_ITEM);
-          const next = spheres[Math.max(0, Math.min(spheres.length - 1, index))];
-          if (next && next.id !== value) onChange(next.id);
+          const next = items[Math.max(0, Math.min(items.length - 1, index))];
+          if (next !== undefined && next !== value) onChange(next);
           if (snapTimer.current != null) window.clearTimeout(snapTimer.current);
           snapTimer.current = window.setTimeout(() => snapTo(index), 90);
         }}
       >
         <div className="drum-pad" />
-        {spheres.map((item) => (
+        {items.map((item) => (
           <button
-            key={item.id}
+            key={String(item)}
             type="button"
-            className={`drum-item${item.id === value ? " active" : ""}`}
+            className={`drum-item${item === value ? " active" : ""}`}
             disabled={disabled}
             onClick={() => {
               if (disabled) return;
-              onChange(item.id);
-              const index = spheres.findIndex((entry) => entry.id === item.id);
+              onChange(item);
+              const index = items.indexOf(item);
               listRef.current?.scrollTo({ top: index * DRUM_ITEM, behavior: "smooth" });
             }}
           >
-            {item.name}
+            {label(item)}
           </button>
         ))}
         <div className="drum-pad" />
+      </div>
+    </div>
+  );
+}
+
+function SphereDrum({
+  spheres,
+  value,
+  disabled,
+  onChange,
+}: {
+  spheres: Interest[];
+  value: string;
+  disabled: boolean;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <ValueDrum
+      items={spheres.map((item) => item.id)}
+      value={value}
+      disabled={disabled}
+      ariaLabel="Сфера"
+      format={(id) => spheres.find((item) => item.id === id)?.name ?? id}
+      onChange={onChange}
+    />
+  );
+}
+
+function rangeInts(from: number, to: number): number[] {
+  const list: number[] = [];
+  for (let n = from; n <= to; n += 1) list.push(n);
+  return list;
+}
+
+function TimeEditModal({
+  name,
+  dateLabel,
+  minutes,
+  minMinutes,
+  maxMinutes,
+  onCancel,
+  onSave,
+}: {
+  name: string;
+  dateLabel: string;
+  minutes: number;
+  minMinutes: number;
+  maxMinutes: number;
+  onCancel: () => void;
+  onSave: (minutes: number) => void;
+}) {
+  const cap = Math.max(minMinutes, maxMinutes);
+  const minH = Math.floor(minMinutes / HOUR_MINUTES);
+  const maxH = Math.floor(cap / HOUR_MINUTES);
+  const hourItems = useMemo(() => rangeInts(minH, maxH), [minH, maxH]);
+  const [hours, setHours] = useState(() =>
+    Math.min(maxH, Math.max(minH, Math.floor(minutes / HOUR_MINUTES))),
+  );
+  const minuteItems = useMemo(() => {
+    const start = hours === minH ? minMinutes - minH * HOUR_MINUTES : 0;
+    const end = hours === maxH ? cap - maxH * HOUR_MINUTES : HOUR_MINUTES - 1;
+    return rangeInts(start, end);
+  }, [hours, minH, maxH, minMinutes, cap]);
+  const [mins, setMins] = useState(() => minutes % HOUR_MINUTES);
+
+  useEffect(() => {
+    if (!minuteItems.includes(mins)) setMins(minuteItems[0] ?? 0);
+  }, [minuteItems, mins]);
+
+  const draft = hours * HOUR_MINUTES + mins;
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div
+        className="modal modal-time"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="time-edit-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-body">
+          <h2 id="time-edit-title">{name}</h2>
+          <p>{dateLabel}</p>
+          <div className="time-edit-drums">
+            <div className="time-edit-col">
+              <ValueDrum
+                items={hourItems}
+                value={hours}
+                ariaLabel="Часы"
+                onChange={setHours}
+              />
+              <span>ч</span>
+            </div>
+            <span className="time-edit-colon" aria-hidden="true">
+              :
+            </span>
+            <div className="time-edit-col">
+              <ValueDrum
+                items={minuteItems}
+                value={mins}
+                ariaLabel="Минуты"
+                format={(item) => String(item).padStart(2, "0")}
+                onChange={setMins}
+              />
+              <span>мин</span>
+            </div>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="pill ghost" onClick={onCancel}>
+            Отмена
+          </button>
+          <button type="button" className="pill" onClick={() => onSave(draft)}>
+            Готово
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1509,12 +1658,14 @@ function BalanceWheel({
   timerOnly,
   onBump,
   onRename,
+  onEditTime,
 }: {
   interests: Interest[];
   roomMinutes: number;
   timerOnly: boolean;
   onBump: (id: string, dir: 1 | -1, source: "wheel" | "list") => void;
   onRename: (id: string, name: string) => void;
+  onEditTime: (id: string) => void;
 }) {
   const count = interests.length;
 
@@ -1624,8 +1775,18 @@ function BalanceWheel({
               top: `${(pos.y / VIEW) * 100}%`,
             }}
           >
-            <SpokeName item={item} onRename={onRename} />
-            <em>{formatMinutes(item.minutes)}</em>
+            <SpokeName
+              item={item}
+              onRename={onRename}
+              onTap={() => onEditTime(item.id)}
+            />
+            <button
+              type="button"
+              className="spoke-time"
+              onClick={() => onEditTime(item.id)}
+            >
+              {formatMinutes(item.minutes)}
+            </button>
             {hideBtns ? null : (
               <div className="spoke-btns">
                 <button
@@ -1664,16 +1825,35 @@ function BalanceWheel({
   );
 }
 
+function resetViewportZoom() {
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (!meta) return;
+  const restore =
+    meta.getAttribute("content") ??
+    "width=device-width, initial-scale=1.0, viewport-fit=cover";
+  meta.setAttribute(
+    "content",
+    "width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover",
+  );
+  window.scrollTo(0, 0);
+  window.setTimeout(() => {
+    meta.setAttribute("content", restore);
+  }, 320);
+}
+
 function SpokeName({
   item,
   onRename,
+  onTap,
 }: {
   item: Interest;
   onRename: (id: string, name: string) => void;
+  onTap?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.name);
   const timer = useRef<number | null>(null);
+  const skipClick = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -1689,13 +1869,19 @@ function SpokeName({
 
   function startEdit() {
     if (item.locked) return;
+    skipClick.current = true;
     setDraft(item.name);
     setEditing(true);
   }
 
-  function commit() {
-    onRename(item.id, draft);
+  function finishEdit(save: boolean) {
+    if (save) onRename(item.id, draft);
     setEditing(false);
+    window.setTimeout(resetViewportZoom, 50);
+  }
+
+  function commit() {
+    finishEdit(true);
   }
 
   if (editing) {
@@ -1715,7 +1901,7 @@ function SpokeName({
             }
             if (event.key === "Escape") {
               event.preventDefault();
-              setEditing(false);
+              finishEdit(false);
             }
           }}
         />
@@ -1728,7 +1914,14 @@ function SpokeName({
       <strong
         className={item.locked ? undefined : "spoke-name"}
         style={{ color: toneForInterest(item) }}
-        title={item.locked ? undefined : "Удерживайте, чтобы переименовать"}
+        title={item.locked ? "Нажмите, чтобы изменить время" : "Нажмите — время, удерживайте — имя"}
+        onClick={() => {
+          if (skipClick.current) {
+            skipClick.current = false;
+            return;
+          }
+          onTap?.();
+        }}
         onPointerDown={() => {
           if (item.locked) return;
           clearTimer();
