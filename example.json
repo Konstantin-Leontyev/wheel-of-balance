@@ -1,0 +1,66 @@
+{
+  "kind": "wheel-of-balance-backup",
+  "version": 8,
+  "exportedAt": "2026-09-22T06:00:00.000Z",
+  "dates": {
+    "2026-09-21": {
+      "spheres": {
+        "sleep": {
+          "sessions": [
+            {
+              "id": "p-sleep-night",
+              "minutes": 510,
+              "comment": "forgot the night timer"
+            }
+          ]
+        },
+        "work": {
+          "sessions": [
+            {
+              "id": "p-work-morning",
+              "minutes": 110,
+              "comment": "calls"
+            },
+            {
+              "id": "p-work-afternoon",
+              "minutes": 75,
+              "comment": ""
+            }
+          ]
+        },
+        "family": {
+          "sessions": [
+            {
+              "id": "p-walk-family",
+              "minutes": 75,
+              "comment": "walk with a kid"
+            }
+          ]
+        },
+        "sport": {
+          "sessions": [
+            {
+              "id": "p-walk-sport",
+              "minutes": 50,
+              "comment": "walk with a kid",
+              "aux": true
+            }
+          ]
+        }
+      }
+    },
+    "2026-09-22": {
+      "spheres": {
+        "sleep": {
+          "sessions": [
+            {
+              "id": "p-sleep-22",
+              "minutes": 480,
+              "comment": ""
+            }
+          ]
+        }
+      }
+    }
+  }
+}

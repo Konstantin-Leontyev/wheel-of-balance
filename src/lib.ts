@@ -132,22 +132,20 @@ export type RunningTimer = {
   runs: TimerRun[];
 };
 
-export type PeriodShare = {
-  interestId: string;
+export type SphereSession = {
+  id: string;
   minutes: number;
-  role: MinuteRole;
+  comment: string;
+  aux?: boolean;
 };
 
-export type DayPeriod = {
-  id: string;
-  source: "timer" | "manual";
-  shares: PeriodShare[];
+export type DayRecord = {
+  spheres: Record<string, { sessions: SphereSession[] }>;
 };
 
 export type AppPersist = {
   feelWeek: WeekPlan;
-  actualByDate: Record<DateKey, Interest[]>;
-  periodsByDate: Record<DateKey, DayPeriod[]>;
+  dates: Record<DateKey, DayRecord>;
   runningTimer: RunningTimer | null;
   feelConfirmed: boolean;
   feelSkipped: boolean;
@@ -490,210 +488,258 @@ export function addActualMinutes(
   return { items: clampDayMinutes(next), added };
 }
 
-function isMinuteRole(value: unknown): value is MinuteRole {
-  return value === "primary" || value === "auxiliary";
-}
-
-function isPeriodShare(value: unknown): value is PeriodShare {
-  if (!value || typeof value !== "object") return false;
+function cleanSession(value: unknown): SphereSession | null {
+  if (!value || typeof value !== "object") return null;
   const rec = value as Record<string, unknown>;
-  return (
-    typeof rec.interestId === "string" &&
-    typeof rec.minutes === "number" &&
-    rec.minutes >= 0 &&
-    isMinuteRole(rec.role)
-  );
-}
-
-export function isDayPeriod(value: unknown): value is DayPeriod {
-  if (!value || typeof value !== "object") return false;
-  const rec = value as Record<string, unknown>;
-  if (typeof rec.id !== "string") return false;
-  if (rec.source !== "timer" && rec.source !== "manual") return false;
-  return Array.isArray(rec.shares) && rec.shares.length > 0 && rec.shares.every(isPeriodShare);
-}
-
-export function isPeriodsByDate(value: unknown): value is Record<DateKey, DayPeriod[]> {
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value as Record<string, unknown>).every(
-    (items) => Array.isArray(items) && items.every(isDayPeriod),
-  );
-}
-
-function cleanPeriod(period: DayPeriod): DayPeriod {
-  return {
-    id: period.id,
-    source: period.source === "timer" ? "timer" : "manual",
-    shares: period.shares
-      .filter((share) => share.minutes > 0)
-      .map((share) => ({
-        interestId: share.interestId,
-        minutes: Math.round(share.minutes),
-        role: share.role,
-      })),
+  if (typeof rec.id !== "string" || typeof rec.minutes !== "number" || rec.minutes <= 0) return null;
+  const session: SphereSession = {
+    id: rec.id,
+    minutes: Math.round(rec.minutes),
+    comment: typeof rec.comment === "string" ? rec.comment : "",
   };
+  if (rec.aux === true) session.aux = true;
+  return session;
 }
 
-export function periodsFromInterests(items: Interest[]): DayPeriod[] {
-  const periods: DayPeriod[] = [];
-  for (const item of items) {
-    const primary = primaryMinutes(item);
-    if (primary > 0) {
-      periods.push({
-        id: newPeriodId(),
-        source: "manual",
-        shares: [{ interestId: item.id, minutes: primary, role: "primary" }],
-      });
+export function cleanDates(value: unknown): Record<DateKey, DayRecord> {
+  if (!value || typeof value !== "object") return {};
+  const dates: Record<DateKey, DayRecord> = {};
+  for (const [key, day] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key) || !day || typeof day !== "object") continue;
+    const spheresIn = (day as { spheres?: unknown }).spheres;
+    if (!spheresIn || typeof spheresIn !== "object") continue;
+    const spheres: DayRecord["spheres"] = {};
+    for (const [id, sphere] of Object.entries(spheresIn as Record<string, unknown>)) {
+      if (!sphere || typeof sphere !== "object") continue;
+      const listed = (sphere as { sessions?: unknown }).sessions;
+      if (!Array.isArray(listed)) continue;
+      const sessions = listed
+        .map(cleanSession)
+        .filter((session): session is SphereSession => session != null);
+      if (sessions.length > 0) spheres[id] = { sessions };
     }
-    if (item.auxMinutes > 0) {
-      periods.push({
-        id: newPeriodId(),
-        source: "timer",
-        shares: [{ interestId: item.id, minutes: item.auxMinutes, role: "auxiliary" }],
-      });
+    if (Object.keys(spheres).length > 0) dates[key] = { spheres };
+  }
+  return dates;
+}
+
+function loosePeriodsOfDay(value: unknown): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const periods: Array<Record<string, unknown>> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const period = item as Record<string, unknown>;
+    if (typeof period.id !== "string" || !Array.isArray(period.shares) || period.shares.length === 0) {
+      return null;
     }
+    periods.push(period);
   }
   return periods;
 }
 
-export function recoverPeriodsByDate(
-  value: unknown,
-  actualByDate: Record<DateKey, Interest[]>,
-): Record<DateKey, DayPeriod[]> {
-  if (isPeriodsByDate(value)) {
-    const keys = new Set([...Object.keys(value), ...Object.keys(actualByDate)]);
-    const next: Record<DateKey, DayPeriod[]> = {};
-    for (const key of keys) {
-      const listed = value[key];
-      next[key] = listed
-        ? listed.map(cleanPeriod).filter((period) => period.shares.length > 0)
-        : periodsFromInterests(actualByDate[key] ?? []);
-    }
-    return next;
-  }
-  return Object.fromEntries(
-    Object.entries(actualByDate).map(([key, items]) => [key, periodsFromInterests(items)]),
-  );
-}
-
-export function rebuildDayFromPeriods(template: Interest[], periods: DayPeriod[]): Interest[] {
-  const map = new Map(
-    template.map((item) => [item.id, { ...item, minutes: 0, auxMinutes: 0 }]),
-  );
-  for (const period of periods) {
-    for (const share of period.shares) {
-      const current = map.get(share.interestId);
-      if (!current) continue;
-      if (share.role === "auxiliary") {
-        current.minutes += share.minutes;
-        current.auxMinutes += share.minutes;
-      } else {
-        current.minutes += share.minutes;
+function datesFromLegacy(periodsByDate: unknown, actualByDate: unknown): Record<DateKey, DayRecord> {
+  const periodsRecord =
+    periodsByDate && typeof periodsByDate === "object"
+      ? (periodsByDate as Record<string, unknown>)
+      : {};
+  const actualRecord =
+    actualByDate && typeof actualByDate === "object"
+      ? (actualByDate as Record<string, unknown>)
+      : {};
+  const dates: Record<DateKey, DayRecord> = {};
+  for (const key of new Set([...Object.keys(periodsRecord), ...Object.keys(actualRecord)])) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue;
+    const periods = loosePeriodsOfDay(periodsRecord[key]);
+    if (periods) {
+      const spheres: DayRecord["spheres"] = {};
+      for (const period of periods) {
+        const comment = typeof period.comment === "string" ? period.comment : "";
+        for (const share of period.shares as unknown[]) {
+          if (!share || typeof share !== "object") continue;
+          const row = share as Record<string, unknown>;
+          if (typeof row.interestId !== "string" || typeof row.minutes !== "number" || row.minutes <= 0) {
+            continue;
+          }
+          const sessions = spheres[row.interestId]?.sessions ?? [];
+          const session: SphereSession = {
+            id: `${String(period.id)}-${row.interestId}`,
+            minutes: Math.round(row.minutes),
+            comment,
+          };
+          if (row.role === "auxiliary") session.aux = true;
+          sessions.push(session);
+          spheres[row.interestId] = { sessions };
+        }
       }
+      if (Object.keys(spheres).length > 0) dates[key] = { spheres };
+      continue;
     }
+    const items = actualRecord[key];
+    if (!Array.isArray(items)) continue;
+    const spheres: DayRecord["spheres"] = {};
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      if (typeof row.id !== "string") continue;
+      const minutes = Math.max(0, Math.round(typeof row.minutes === "number" ? row.minutes : 0));
+      const aux = Math.max(
+        0,
+        Math.min(Math.round(typeof row.auxMinutes === "number" ? row.auxMinutes : 0), minutes),
+      );
+      const primary = minutes - aux;
+      const sessions: SphereSession[] = [];
+      if (primary > 0) {
+        sessions.push({ id: newPeriodId(), minutes: primary, comment: "" });
+      }
+      if (aux > 0) {
+        sessions.push({ id: newPeriodId(), minutes: aux, comment: "", aux: true });
+      }
+      if (sessions.length > 0) spheres[row.id] = { sessions };
+    }
+    if (Object.keys(spheres).length > 0) dates[key] = { spheres };
   }
-  return sortInterests([...map.values()].map(clampInterest));
+  return dates;
 }
 
-export function dayTemplate(store: AppPersist, dateKey: DateKey): Interest[] {
-  const existing = store.actualByDate[dateKey];
-  if (existing?.length) return emptyActualDay(existing);
-  return emptyActualDay(store.feelWeek[dateKeyToDayId(dateKey)] ?? store.feelWeek.mon);
+export function factDay(store: AppPersist, dateKey: DateKey): Interest[] {
+  const template = store.feelWeek[dateKeyToDayId(dateKey)] ?? store.feelWeek.mon;
+  const spheres = store.dates[dateKey]?.spheres ?? {};
+  return sortInterests(
+    template.map((item) => {
+      const sessions = spheres[item.id]?.sessions ?? [];
+      let minutes = 0;
+      let auxMinutes = 0;
+      for (const session of sessions) {
+        const amount = Math.max(0, session.minutes);
+        minutes += amount;
+        if (session.aux) auxMinutes += amount;
+      }
+      return clampInterest({ ...item, minutes, auxMinutes });
+    }),
+  );
 }
 
-export function dayPeriods(store: AppPersist, dateKey: DateKey): DayPeriod[] {
-  const listed = store.periodsByDate[dateKey];
-  if (listed) return listed;
-  return periodsFromInterests(actualDayFor(store.actualByDate, dateKey, store.feelWeek));
-}
-
-export function periodShareFor(period: DayPeriod, interestId: string): PeriodShare | undefined {
-  return period.shares.find((share) => share.interestId === interestId);
-}
-
-export function periodsForInterest(periods: DayPeriod[], interestId: string): DayPeriod[] {
-  return periods.filter((period) => periodShareFor(period, interestId));
-}
-
-export function patchDayPeriods(
+export function sphereSessions(
   store: AppPersist,
   dateKey: DateKey,
-  periods: DayPeriod[],
-): AppPersist {
-  const template = dayTemplate(store, dateKey);
-  const periodsByDate = { ...store.periodsByDate };
-  const actualByDate = { ...store.actualByDate };
-  const cleaned = periods.map(cleanPeriod).filter((period) => period.shares.length > 0);
-  if (cleaned.length === 0) {
-    delete periodsByDate[dateKey];
-    delete actualByDate[dateKey];
-  } else {
-    periodsByDate[dateKey] = cleaned;
-    actualByDate[dateKey] = rebuildDayFromPeriods(template, cleaned);
-  }
-  return { ...store, periodsByDate, actualByDate };
-}
-
-export function clampShareMinutes(
-  store: AppPersist,
-  dateKey: DateKey,
-  periodId: string,
   interestId: string,
+): SphereSession[] {
+  return store.dates[dateKey]?.spheres[interestId]?.sessions ?? [];
+}
+
+function putSphereSessions(
+  store: AppPersist,
+  dateKey: DateKey,
+  interestId: string,
+  sessions: SphereSession[],
+): AppPersist {
+  const dates = { ...store.dates };
+  const day = dates[dateKey] ?? { spheres: {} };
+  const spheres = { ...day.spheres };
+  const kept = sessions
+    .map((session) => cleanSession(session))
+    .filter((session): session is SphereSession => session != null);
+  if (kept.length === 0) delete spheres[interestId];
+  else spheres[interestId] = { sessions: kept };
+  if (Object.keys(spheres).length === 0) delete dates[dateKey];
+  else dates[dateKey] = { spheres };
+  return { ...store, dates };
+}
+
+export function clampSessionMinutes(
+  store: AppPersist,
+  dateKey: DateKey,
+  interestId: string,
+  sessionId: string,
   minutes: number,
 ): number {
-  const periods = dayPeriods(store, dateKey);
-  const period = periods.find((item) => item.id === periodId);
-  const share = period ? periodShareFor(period, interestId) : undefined;
-  if (!share) return 0;
-  const day = actualDayFor(store.actualByDate, dateKey, store.feelWeek);
+  const current = sphereSessions(store, dateKey, interestId).find((session) => session.id === sessionId);
+  const currentMinutes = current?.minutes ?? 0;
+  const aux = current?.aux === true;
+  const day = factDay(store, dateKey);
   const item = day.find((entry) => entry.id === interestId);
   if (!item) return 0;
-  const roomItem = Math.max(0, MAX_MINUTES_PER_INTEREST - item.minutes + share.minutes);
-  const roomDay =
-    share.role === "auxiliary"
-      ? roomItem
-      : Math.max(0, DAY_MINUTES - dayUsedMinutes(day) + share.minutes);
+  const roomItem = Math.max(0, MAX_MINUTES_PER_INTEREST - item.minutes + currentMinutes);
+  const roomDay = aux
+    ? roomItem
+    : Math.max(0, DAY_MINUTES - dayUsedMinutes(day) + currentMinutes);
   return Math.max(0, Math.min(Math.round(minutes), roomItem, roomDay));
 }
 
-export function setShareMinutes(
-  periods: DayPeriod[],
-  periodId: string,
+export function writeSession(
+  store: AppPersist,
+  dateKey: DateKey,
   interestId: string,
+  sessionId: string,
   minutes: number,
-): DayPeriod[] {
-  return periods.flatMap((period) => {
-    if (period.id !== periodId) return [period];
-    const shares = period.shares.flatMap((share) => {
-      if (share.interestId !== interestId) return [share];
-      if (minutes <= 0) return [];
-      return [{ ...share, minutes }];
-    });
-    return shares.length === 0 ? [] : [{ ...period, shares }];
-  });
+  comment: string,
+): AppPersist {
+  const existing = sphereSessions(store, dateKey, interestId);
+  const current = existing.find((session) => session.id === sessionId);
+  const nextMinutes = clampSessionMinutes(store, dateKey, interestId, sessionId, minutes);
+  const nextComment = comment.trim();
+  if (!current) {
+    if (nextMinutes <= 0) return store;
+    return putSphereSessions(store, dateKey, interestId, [
+      ...existing,
+      { id: sessionId === "new" ? newPeriodId() : sessionId, minutes: nextMinutes, comment: nextComment },
+    ]);
+  }
+  if (nextMinutes <= 0) {
+    return putSphereSessions(
+      store,
+      dateKey,
+      interestId,
+      existing.filter((session) => session.id !== sessionId),
+    );
+  }
+  return putSphereSessions(
+    store,
+    dateKey,
+    interestId,
+    existing.map((session) =>
+      session.id === sessionId
+        ? {
+            ...session,
+            minutes: nextMinutes,
+            comment: nextComment,
+          }
+        : session,
+    ),
+  );
 }
 
-export function addManualPeriod(
+export function addSphereSession(
   store: AppPersist,
   dateKey: DateKey,
   interestId: string,
   minutes: number,
+  comment = "",
+  aux = false,
 ): { store: AppPersist; added: number } {
-  const day = actualDayFor(store.actualByDate, dateKey, store.feelWeek);
-  const added = addActualMinutes(day, interestId, minutes, "primary").added;
+  const probeId = "__new__";
+  const existing = sphereSessions(store, dateKey, interestId);
+  const withProbe = putSphereSessions(store, dateKey, interestId, [
+    ...existing,
+    { id: probeId, minutes: 1, comment: "", ...(aux ? { aux: true } : {}) },
+  ]);
+  const added = clampSessionMinutes(withProbe, dateKey, interestId, probeId, minutes);
   if (added <= 0) return { store, added: 0 };
-  const periods = [
-    ...dayPeriods(store, dateKey),
-    {
-      id: newPeriodId(),
-      source: "manual" as const,
-      shares: [{ interestId, minutes: added, role: "primary" as const }],
-    },
-  ];
-  return { store: patchDayPeriods(store, dateKey, periods), added };
+  return {
+    store: putSphereSessions(store, dateKey, interestId, [
+      ...existing,
+      {
+        id: newPeriodId(),
+        minutes: added,
+        comment: comment.trim(),
+        ...(aux ? { aux: true } : {}),
+      },
+    ]),
+    added,
+  };
 }
 
-export function appendTimerPeriods(
+export function appendTimerSessions(
   store: AppPersist,
   interestId: string,
   secondaryId: string | null,
@@ -711,27 +757,18 @@ export function appendTimerPeriods(
   const parts: Array<{ dateKey: DateKey; minutes: number; added: number }> = [];
   for (const chunk of chunks) {
     if (chunk.minutes <= 0) continue;
-    const day = actualDayFor(next.actualByDate, chunk.dateKey, next.feelWeek);
-    const primary = addActualMinutes(day, interestId, chunk.minutes, "primary");
-    let auxAdded = 0;
-    if (secondaryId && primary.added > 0) {
-      auxAdded = addActualMinutes(primary.items, secondaryId, primary.added, "auxiliary").added;
-    }
+    const primary = addSphereSession(next, chunk.dateKey, interestId, chunk.minutes);
     if (primary.added <= 0) {
       parts.push({ dateKey: chunk.dateKey, minutes: chunk.minutes, added: 0 });
       continue;
     }
-    const shares: PeriodShare[] = [
-      { interestId, minutes: primary.added, role: "primary" },
-    ];
-    if (secondaryId && auxAdded > 0) {
-      shares.push({ interestId: secondaryId, minutes: auxAdded, role: "auxiliary" });
+    next = primary.store;
+    let auxAdded = 0;
+    if (secondaryId) {
+      const extra = addSphereSession(next, chunk.dateKey, secondaryId, primary.added, "", true);
+      auxAdded = extra.added;
+      next = extra.store;
     }
-    const periods = [
-      ...dayPeriods(next, chunk.dateKey),
-      { id: newPeriodId(), source: "timer" as const, shares },
-    ];
-    next = patchDayPeriods(next, chunk.dateKey, periods);
     added += primary.added;
     auxTotal += auxAdded;
     parts.push({ dateKey: chunk.dateKey, minutes: chunk.minutes, added: primary.added });
@@ -886,18 +923,8 @@ export function isRunningTimer(value: unknown): value is RunningTimer {
   return typeof timer.startedAt === "number";
 }
 
-export function isActualByDate(value: unknown): value is Record<DateKey, Interest[]> {
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value as Record<string, unknown>).every((items) => isInterestArray(items));
-}
-
-function recoverActualByDate(value: unknown): Record<DateKey, Interest[]> {
-  if (!value || typeof value !== "object") return {};
-  const next: Record<DateKey, Interest[]> = {};
-  for (const [key, items] of Object.entries(value as Record<string, unknown>)) {
-    if (isInterestArray(items)) next[key] = items.map((item) => migrateInterest(item));
-  }
-  return next;
+function isDatesRecord(value: unknown): value is Record<DateKey, DayRecord> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function isAppPersist(value: unknown): value is AppPersist {
@@ -905,7 +932,7 @@ export function isAppPersist(value: unknown): value is AppPersist {
   const record = value as Record<string, unknown>;
   return (
     isWeekPlan(record.feelWeek) &&
-    isActualByDate(record.actualByDate) &&
+    isDatesRecord(record.dates) &&
     (record.runningTimer == null || isRunningTimer(record.runningTimer)) &&
     typeof record.feelConfirmed === "boolean" &&
     typeof record.introSeen === "boolean"
@@ -913,33 +940,13 @@ export function isAppPersist(value: unknown): value is AppPersist {
 }
 
 export const BACKUP_KIND = "wheel-of-balance-backup";
-export const BACKUP_VERSION = 8;
+export const BACKUP_VERSION = 9;
 
 export function sanitizePersist(store: AppPersist): AppPersist {
-  const feelWeek = sanitizeWeek(store.feelWeek);
-  const seedActual = Object.fromEntries(
-    Object.entries(store.actualByDate).map(([key, items]) => [
-      key,
-      items.map((item) => migrateInterest(item)),
-    ]),
-  );
-  const periodsByDate = recoverPeriodsByDate(store.periodsByDate, seedActual);
-  const actualByDate = Object.fromEntries(
-    Object.keys({ ...seedActual, ...periodsByDate }).map((key) => {
-      const existing = seedActual[key];
-      const template = existing?.length
-        ? emptyActualDay(existing)
-        : emptyActualDay(feelWeek[dateKeyToDayId(key)] ?? feelWeek.mon);
-      return [key, rebuildDayFromPeriods(template, periodsByDate[key] ?? [])];
-    }),
-  );
   return {
-    feelWeek,
-    actualByDate,
-    periodsByDate,
-    runningTimer: store.runningTimer
-      ? normalizeRunningTimer(store.runningTimer)
-      : null,
+    feelWeek: sanitizeWeek(store.feelWeek),
+    dates: cleanDates(store.dates),
+    runningTimer: store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null,
     feelConfirmed: store.feelConfirmed,
     feelSkipped: store.feelSkipped === true,
     introSeen: store.introSeen,
@@ -956,47 +963,36 @@ export function buildBackup(store: AppPersist) {
 }
 
 export function parseBackup(value: unknown): AppPersist | null {
-  if (isAppPersist(value)) return sanitizePersist(value);
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const runningTimer =
     record.runningTimer == null || isRunningTimer(record.runningTimer)
       ? record.runningTimer ?? null
       : null;
-  const actualByDate = isActualByDate(record.actualByDate)
-    ? record.actualByDate
-    : recoverActualByDate(record.actualByDate);
-  const periodsByDate = recoverPeriodsByDate(record.periodsByDate, actualByDate);
-  const loose = {
-    feelWeek: record.feelWeek,
-    actualByDate,
-    periodsByDate,
-    runningTimer,
-    feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
-    feelSkipped: record.feelSkipped === true,
-    introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
-  };
-  if (isAppPersist(loose)) return sanitizePersist(loose);
-  if (isWeekPlan(record.feelWeek)) {
+  if (isDatesRecord(record.dates)) {
+    const datesOnly = !isWeekPlan(record.feelWeek);
     return sanitizePersist({
-      feelWeek: sanitizeWeek(record.feelWeek),
-      actualByDate,
-      periodsByDate,
+      feelWeek: isWeekPlan(record.feelWeek) ? record.feelWeek : defaultWeek(),
+      dates: cleanDates(record.dates),
+      runningTimer,
+      feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
+      feelSkipped: typeof record.feelSkipped === "boolean" ? record.feelSkipped : datesOnly,
+      introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
+    });
+  }
+  if (record.periodsByDate || record.actualByDate || isWeekPlan(record.feelWeek) || isWeekPlan(value)) {
+    const feelWeek = isWeekPlan(record.feelWeek)
+      ? record.feelWeek
+      : isWeekPlan(value)
+        ? value
+        : defaultWeek();
+    return sanitizePersist({
+      feelWeek,
+      dates: datesFromLegacy(record.periodsByDate, record.actualByDate),
       runningTimer,
       feelConfirmed: typeof record.feelConfirmed === "boolean" ? record.feelConfirmed : true,
       feelSkipped: record.feelSkipped === true,
       introSeen: typeof record.introSeen === "boolean" ? record.introSeen : true,
-    });
-  }
-  if (isWeekPlan(value)) {
-    return sanitizePersist({
-      feelWeek: sanitizeWeek(value),
-      actualByDate: {},
-      periodsByDate: {},
-      runningTimer: null,
-      feelConfirmed: true,
-      feelSkipped: false,
-      introSeen: true,
     });
   }
   return null;

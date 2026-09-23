@@ -509,9 +509,10 @@ h3 {
 .period-row {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 12px 14px;
   border: 1px solid #d9d2c8;
   border-radius: 12px;
@@ -522,6 +523,14 @@ h3 {
   cursor: pointer;
 }
 
+.period-row-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
 .period-row strong {
   font-size: 16px;
 }
@@ -530,6 +539,42 @@ h3 {
   color: #6b6560;
   font-size: 13px;
   font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.period-row-text strong {
+  color: inherit;
+  font-size: 16px;
+}
+
+.period-edit {
+  flex: none;
+  color: #6b6560;
+  display: flex;
+}
+
+.time-edit-comment {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: 8px;
+  text-align: left;
+}
+
+.time-edit-comment span {
+  color: #6b6560;
+  font-size: 13px;
+}
+
+.time-edit-comment input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d9d2c8;
+  border-radius: 12px;
+  background: #fffcf7;
+  color: inherit;
 }
 
 .time-edit-drums {

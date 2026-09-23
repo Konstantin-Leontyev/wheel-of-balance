@@ -19,18 +19,16 @@ import {
   WORK_NORM_MINUTES,
   WHEEL_STEP_MINUTES,
   allocateTimerMinutes,
-  addManualPeriod,
-  actualDayFor,
+  addSphereSession,
   aggregateWeek,
-  appendTimerPeriods,
+  appendTimerSessions,
   buildBackup,
   clampDayMinutes,
-  clampShareMinutes,
+  clampSessionMinutes,
   closedCurve,
   colorAtLevel,
   dailyMinutes,
   dateKeyToDayId,
-  dayPeriods,
   dayUsedMinutes,
   defaultWeek,
   floorFor,
@@ -45,21 +43,19 @@ import {
   monthCells,
   nextListMinutes,
   nextWheelMinutes,
+  factDay,
   normalizeRunningTimer,
-  patchDayPeriods,
   pauseRunningTimer,
   resumeRunningTimer,
   startRunningTimer,
   parseBackup,
   palette,
   parseDateKey,
-  periodShareFor,
-  periodsForInterest,
   polar,
   primaryMinutes,
   levelValue,
   sanitizeWeek,
-  setShareMinutes,
+  sphereSessions,
   timerElapsedMs,
   todayDateKey,
   todayDayId,
@@ -68,14 +64,16 @@ import {
   weekLevelValue,
   weekToneForInterest,
   weekUsedMinutes,
+  writeSession,
   type AppPersist,
   type DateKey,
   type DayId,
-  type DayPeriod,
   type Interest,
+  type SphereSession,
 } from "./lib";
 
-const STORAGE_KEY = "wheel-of-balance-v8";
+const STORAGE_KEY = "wheel-of-balance-v9";
+const PREVIOUS_KEY = "wheel-of-balance-v8";
 const LEGACY_KEY = "wheel-of-balance-v7";
 
 type ToastItem = {
@@ -90,8 +88,7 @@ type MobileTab = "map" | "timer" | "calendar" | "data";
 function emptyStore(): AppPersist {
   return {
     feelWeek: defaultWeek(),
-    actualByDate: {},
-    periodsByDate: {},
+    dates: {},
     runningTimer: null,
     feelConfirmed: false,
     feelSkipped: false,
@@ -122,12 +119,21 @@ function readBoot(): BootResult {
         const backup = parseBackup(JSON.parse(raw) as unknown);
         if (backup) return { store: backup, allowWrite: true, hadCorrupt: false };
       } catch {
-        /* unreadable v8 */
+        /* unreadable v9 */
       }
       return { store: emptyStore(), allowWrite: false, hadCorrupt: true };
     }
   } catch {
     return { store: emptyStore(), allowWrite: false, hadCorrupt: true };
+  }
+  try {
+    const previous = localStorage.getItem(PREVIOUS_KEY);
+    if (previous) {
+      const backup = parseBackup(JSON.parse(previous) as unknown);
+      if (backup) return { store: backup, allowWrite: true, hadCorrupt: false };
+    }
+  } catch {
+    /* keep the old key, start clean in v9 */
   }
   try {
     const legacy = localStorage.getItem(LEGACY_KEY);
@@ -137,8 +143,7 @@ function readBoot(): BootResult {
         return {
           store: {
             feelWeek: sanitizeWeek(parsed),
-            actualByDate: {},
-            periodsByDate: {},
+            dates: {},
             runningTimer: null,
             feelConfirmed: true,
             feelSkipped: false,
@@ -274,7 +279,7 @@ export default function App() {
   const interests =
     viewMode === "feel"
       ? store.feelWeek[dayId]
-      : actualDayFor(store.actualByDate, viewDateKey, store.feelWeek);
+      : factDay(store, viewDateKey);
 
   function persistNow(next: AppPersist) {
     if (!allowWrite.current) return;
@@ -382,15 +387,13 @@ export default function App() {
 
   const usedMinutesFeel = weekUsedMinutes(store.feelWeek);
   const weekActualLists = weekKeys.map((key) =>
-    actualDayFor(store.actualByDate, key, store.feelWeek),
+    factDay(store, key),
   );
   const usedMinutesActualWeek = weekActualLists.reduce(
     (sum, items) => sum + dayUsedMinutes(items),
     0,
   );
-  const usedMinutesActualDay = dayUsedMinutes(
-    actualDayFor(store.actualByDate, viewDateKey, store.feelWeek),
-  );
+  const usedMinutesActualDay = dayUsedMinutes(factDay(store, viewDateKey));
   const weekUsedForStats = viewMode === "feel" ? usedMinutesFeel : usedMinutesActualWeek;
   const freeMinutes = WEEK_MINUTES - weekUsedForStats;
   const dayRoom = Math.max(0, DAY_MINUTES - dayUsedMinutes(interests));
@@ -407,7 +410,7 @@ export default function App() {
         : mergeInterestLists(weekActualLists),
     [viewMode, store.feelWeek, weekActualLists],
   );
-  const timerSpheres = actualDayFor(store.actualByDate, todayKey, store.feelWeek);
+  const timerSpheres = factDay(store, todayKey);
   const running = store.runningTimer ? normalizeRunningTimer(store.runningTimer) : null;
   const runningItem = running
     ? timerSpheres.find((item) => item.id === running.interestId) ??
@@ -465,8 +468,8 @@ export default function App() {
 
   function commitFactStore(next: AppPersist) {
     noteBalanceToasts(
-      actualDayFor(store.actualByDate, viewDateKey, store.feelWeek),
-      actualDayFor(next.actualByDate, viewDateKey, store.feelWeek),
+      factDay(store, viewDateKey),
+      factDay(next, viewDateKey),
     );
     commitStore(() => next);
   }
@@ -510,13 +513,11 @@ export default function App() {
   }
 
   function bumpFact(id: string, dir: 1 | -1, step: number) {
-    const current = interests.find((item) => item.id === id);
-    if (!current) return;
-    const periods = dayPeriods(store, viewDateKey);
-    const latest = [...periods].reverse().find((period) => periodShareFor(period, id));
+    const sessions = sphereSessions(store, viewDateKey, id);
+    const latest = sessions[sessions.length - 1];
     if (!latest) {
       if (dir < 0) return;
-      const result = addManualPeriod(store, viewDateKey, id, step);
+      const result = addSphereSession(store, viewDateKey, id, step);
       if (result.added === 0) {
         addToast(
           "warning",
@@ -528,16 +529,14 @@ export default function App() {
       commitFactStore(result.store);
       return;
     }
-    const share = periodShareFor(latest, id);
-    if (!share) return;
-    const nextMinutes = clampShareMinutes(
+    const nextMinutes = clampSessionMinutes(
       store,
       viewDateKey,
-      latest.id,
       id,
-      share.minutes + dir * step,
+      latest.id,
+      latest.minutes + dir * step,
     );
-    if (nextMinutes === share.minutes) {
+    if (nextMinutes === latest.minutes) {
       if (dir > 0) {
         addToast(
           "warning",
@@ -548,7 +547,7 @@ export default function App() {
       return;
     }
     commitFactStore(
-      patchDayPeriods(store, viewDateKey, setShareMinutes(periods, latest.id, id, nextMinutes)),
+      writeSession(store, viewDateKey, id, latest.id, nextMinutes, latest.comment),
     );
   }
 
@@ -598,11 +597,11 @@ export default function App() {
     else setPeriodListId(id);
   }
 
-  function savePeriodMinutes(minutes: number) {
+  function savePeriodMinutes(minutes: number, comment: string) {
     if (!periodEdit) return;
     const { interestId, periodId } = periodEdit;
     if (periodId === "new") {
-      const result = addManualPeriod(store, viewDateKey, interestId, minutes);
+      const result = addSphereSession(store, viewDateKey, interestId, minutes, comment);
       if (result.added === 0 && minutes > 0) {
         addToast(
           "warning",
@@ -613,14 +612,7 @@ export default function App() {
         commitFactStore(result.store);
       }
     } else {
-      const nextMinutes = clampShareMinutes(store, viewDateKey, periodId, interestId, minutes);
-      commitFactStore(
-        patchDayPeriods(
-          store,
-          viewDateKey,
-          setShareMinutes(dayPeriods(store, viewDateKey), periodId, interestId, nextMinutes),
-        ),
-      );
+      commitFactStore(writeSession(store, viewDateKey, interestId, periodId, minutes, comment));
     }
     setPeriodEdit(null);
     setPeriodListId(null);
@@ -629,10 +621,7 @@ export default function App() {
   function addInterest() {
     const name = draft.trim();
     if (!name || interests.length >= MAX_INTERESTS) return;
-    const existingId = [
-      ...DAYS.map((day) => store.feelWeek[day.id]),
-      ...Object.values(store.actualByDate),
-    ]
+    const existingId = DAYS.map((day) => store.feelWeek[day.id])
       .flat()
       .find((item) => item.name === name)?.id;
     const id = existingId ?? `i-${seq}`;
@@ -653,42 +642,31 @@ export default function App() {
           return [day.id, [...items, { ...created }]];
         }),
       ) as AppPersist["feelWeek"];
-      const current = actualDayFor(prev.actualByDate, viewDateKey, feelWeek);
-      return {
-        ...prev,
-        feelWeek,
-        actualByDate: {
-          ...prev.actualByDate,
-          [viewDateKey]: clampDayMinutes(
-            current.some((item) => item.id === id) ? current : [...current, created],
-          ),
-        },
-      };
+      return { ...prev, feelWeek };
     });
   }
 
   function removeInterest(id: string) {
-    const next = interests.filter((item) => item.id !== id || item.locked);
+    const drop = (items: Interest[]) => items.filter((item) => item.id !== id || item.locked);
     if (viewMode === "feel") {
-      setFeelDay(next);
+      setFeelDay(drop(interests));
       return;
     }
-    const periods = dayPeriods(store, viewDateKey)
-      .map((period) => ({
-        ...period,
-        shares: period.shares.filter((share) => share.interestId !== id),
-      }))
-      .filter((period) => period.shares.length > 0);
-    commitStore((prev) =>
-      patchDayPeriods(
-        {
-          ...prev,
-          actualByDate: { ...prev.actualByDate, [viewDateKey]: next },
-        },
-        viewDateKey,
-        periods,
-      ),
-    );
+    commitStore((prev) => {
+      const dates = Object.fromEntries(
+        Object.entries(prev.dates).flatMap(([key, day]) => {
+          if (!day.spheres[id]) return [[key, day] as const];
+          const spheres = { ...day.spheres };
+          delete spheres[id];
+          if (Object.keys(spheres).length === 0) return [];
+          return [[key, { spheres }] as const];
+        }),
+      );
+      const feelWeek = Object.fromEntries(
+        DAYS.map((day) => [day.id, drop(prev.feelWeek[day.id])]),
+      ) as AppPersist["feelWeek"];
+      return { ...prev, feelWeek, dates };
+    });
   }
 
   function renameInterest(id: string, name: string) {
@@ -707,9 +685,6 @@ export default function App() {
       feelWeek: Object.fromEntries(
         DAYS.map((day) => [day.id, rename(prev.feelWeek[day.id])]),
       ) as AppPersist["feelWeek"],
-      actualByDate: Object.fromEntries(
-        Object.entries(prev.actualByDate).map(([key, items]) => [key, rename(items)]),
-      ),
     }));
   }
 
@@ -762,10 +737,10 @@ export default function App() {
       );
       return;
     }
-    const template = actualDayFor(store.actualByDate, timer.dateKey, store.feelWeek);
+    const template = factDay(store, timer.dateKey);
     const splitByDate = isSleepTimerId(timer.interestId, template);
     const chunks = allocateTimerMinutes(timer, now, splitByDate);
-    const result = appendTimerPeriods(
+    const result = appendTimerSessions(
       store,
       timer.interestId,
       timer.secondaryId,
@@ -864,11 +839,9 @@ export default function App() {
       commitStore((prev) => ({ ...prev, feelWeek: defaultWeek() }));
     } else {
       commitStore((prev) => {
-        const nextActual = { ...prev.actualByDate };
-        const nextPeriods = { ...prev.periodsByDate };
-        delete nextActual[viewDateKey];
-        delete nextPeriods[viewDateKey];
-        return { ...prev, actualByDate: nextActual, periodsByDate: nextPeriods };
+        const dates = { ...prev.dates };
+        delete dates[viewDateKey];
+        return { ...prev, dates };
       });
     }
     setResetOpen(false);
@@ -890,37 +863,26 @@ export default function App() {
   const periodListItem = periodListId
     ? interests.find((item) => item.id === periodListId)
     : undefined;
-  const periodRows = periodListId
-    ? periodsForInterest(dayPeriods(store, viewDateKey), periodListId)
-    : [];
+  const periodRows = periodListId ? sphereSessions(store, viewDateKey, periodListId) : [];
   const periodEditItem = periodEdit
     ? interests.find((item) => item.id === periodEdit.interestId)
     : undefined;
-  const periodEditShare =
+  const periodEditSession =
     periodEdit && periodEdit.periodId !== "new"
-      ? periodShareFor(
-          dayPeriods(store, viewDateKey).find((period) => period.id === periodEdit.periodId) ?? {
-            id: "",
-            source: "manual",
-            shares: [],
-          },
-          periodEdit.interestId,
+      ? sphereSessions(store, viewDateKey, periodEdit.interestId).find(
+          (session) => session.id === periodEdit.periodId,
         )
       : undefined;
-  const periodEditMinutes = periodEditShare?.minutes ?? 0;
-  const periodEditMax =
-    periodEdit && periodEdit.periodId !== "new"
-      ? clampShareMinutes(
-          store,
-          viewDateKey,
-          periodEdit.periodId,
-          periodEdit.interestId,
-          16 * HOUR_MINUTES,
-        )
-      : Math.min(
-          MAX_MINUTES_PER_INTEREST - (periodEditItem?.minutes ?? 0),
-          Math.max(0, DAY_MINUTES - dayUsedMinutes(interests)),
-        );
+  const periodEditMinutes = periodEditSession?.minutes ?? 0;
+  const periodEditMax = periodEdit
+    ? clampSessionMinutes(
+        store,
+        viewDateKey,
+        periodEdit.interestId,
+        periodEdit.periodId,
+        16 * HOUR_MINUTES,
+      )
+    : 0;
 
   return (
     <div
@@ -1142,9 +1104,7 @@ export default function App() {
         <PeriodListModal
           name={periodListItem.name}
           dateLabel={formatDateTitle(viewDateKey)}
-          periods={periodRows}
-          interestId={periodListItem.id}
-          spheres={interests}
+          sessions={periodRows}
           onClose={() => setPeriodListId(null)}
           onAdd={() =>
             setPeriodEdit({ interestId: periodListItem.id, periodId: "new" })
@@ -1164,6 +1124,7 @@ export default function App() {
               : formatDateTitle(viewDateKey)
           }
           minutes={periodEditMinutes}
+          comment={periodEditSession?.comment ?? ""}
           minMinutes={0}
           maxMinutes={Math.max(periodEditMinutes, periodEditMax)}
           onCancel={() => setPeriodEdit(null)}
@@ -1343,7 +1304,7 @@ export default function App() {
           month={calCursor.month}
           selected={viewDateKey}
           today={todayKey}
-          marked={Object.keys(store.actualByDate)}
+          marked={Object.keys(store.dates)}
           onPrev={() =>
             setCalCursor((prev) =>
               prev.month === 0
@@ -1880,39 +1841,20 @@ function rangeInts(from: number, to: number): number[] {
   return list;
 }
 
-function periodRowHint(
-  period: DayPeriod,
-  interestId: string,
-  spheres: Interest[],
-): string {
-  const others = period.shares
-    .filter((share) => share.interestId !== interestId)
-    .map((share) => spheres.find((item) => item.id === share.interestId)?.name)
-    .filter((name): name is string => Boolean(name));
-  const bits: string[] = [];
-  if (others.length > 0) bits.push(`вместе с ${others.join(", ")}`);
-  bits.push(period.source === "timer" ? "секундомер" : "вручную");
-  return bits.join(" · ");
-}
-
 function PeriodListModal({
   name,
   dateLabel,
-  periods,
-  interestId,
-  spheres,
+  sessions,
   onClose,
   onAdd,
   onPick,
 }: {
   name: string;
   dateLabel: string;
-  periods: DayPeriod[];
-  interestId: string;
-  spheres: Interest[];
+  sessions: SphereSession[];
   onClose: () => void;
   onAdd: () => void;
-  onPick: (periodId: string) => void;
+  onPick: (sessionId: string) => void;
 }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -1926,26 +1868,35 @@ function PeriodListModal({
         <div className="modal-body">
           <h2 id="period-list-title">{name}</h2>
           <p>{dateLabel}</p>
-          {periods.length === 0 ? (
+          {sessions.length === 0 ? (
             <p>Пока нет записей за этот день. Можно указать время вручную.</p>
           ) : (
             <ul className="period-list">
-              {periods.map((period) => {
-                const share = periodShareFor(period, interestId);
-                if (!share) return null;
-                return (
-                  <li key={period.id}>
-                    <button
-                      type="button"
-                      className="period-row"
-                      onClick={() => onPick(period.id)}
-                    >
-                      <strong>{formatMinutes(share.minutes)}</strong>
-                      <span>{periodRowHint(period, interestId, spheres)}</span>
-                    </button>
-                  </li>
-                );
-              })}
+              {sessions.map((session) => (
+                <li key={session.id}>
+                  <button
+                    type="button"
+                    className="period-row"
+                    onClick={() => onPick(session.id)}
+                  >
+                    <span className="period-row-text">
+                      <strong>{formatMinutes(session.minutes)}</strong>
+                      <span>{session.comment.trim() || "Добавить комментарий"}</span>
+                    </span>
+                    <span className="period-edit" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path
+                          d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          strokeLinejoin="round"
+                        />
+                        <path d="M13.5 6.5l3 3" stroke="currentColor" strokeWidth="1.6" />
+                      </svg>
+                    </span>
+                  </button>
+                </li>
+              ))}
             </ul>
           )}
         </div>
@@ -1966,6 +1917,7 @@ function TimeEditModal({
   name,
   dateLabel,
   minutes,
+  comment,
   minMinutes,
   maxMinutes,
   onCancel,
@@ -1974,10 +1926,11 @@ function TimeEditModal({
   name: string;
   dateLabel: string;
   minutes: number;
+  comment?: string;
   minMinutes: number;
   maxMinutes: number;
   onCancel: () => void;
-  onSave: (minutes: number) => void;
+  onSave: (minutes: number, comment: string) => void;
 }) {
   const cap = Math.max(minMinutes, maxMinutes);
   const minH = Math.floor(minMinutes / HOUR_MINUTES);
@@ -1992,6 +1945,7 @@ function TimeEditModal({
     return rangeInts(start, end);
   }, [hours, minH, maxH, minMinutes, cap]);
   const [mins, setMins] = useState(() => minutes % HOUR_MINUTES);
+  const [note, setNote] = useState(comment ?? "");
   const hourRead = useRef<(() => number) | null>(null);
   const minRead = useRef<(() => number) | null>(null);
 
@@ -2039,6 +1993,16 @@ function TimeEditModal({
               <span>мин</span>
             </div>
           </div>
+          {comment != null ? (
+            <label className="time-edit-comment">
+              <span>Комментарий</span>
+              <input
+                value={note}
+                placeholder="Что это было"
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </label>
+          ) : null}
         </div>
         <div className="modal-actions">
           <button type="button" className="pill ghost" onClick={onCancel}>
@@ -2050,7 +2014,7 @@ function TimeEditModal({
             onClick={() => {
               const nextHours = hourRead.current?.() ?? hours;
               const nextMins = minRead.current?.() ?? mins;
-              onSave(nextHours * HOUR_MINUTES + nextMins);
+              onSave(nextHours * HOUR_MINUTES + nextMins, note);
             }}
           >
             Готово
